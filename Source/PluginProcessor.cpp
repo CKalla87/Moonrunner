@@ -263,14 +263,13 @@ void MoonrunnerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
             // Only update on-screen keyboard state for external MIDI (not UI-generated)
             if (!isFromUI)
             {
-                if (auto* editor = getActiveEditor())
+                if (auto* editor = dynamic_cast<MoonrunnerAudioProcessorEditor*> (getActiveEditor()))
                 {
-                    juce::MessageManager::callAsync ([editor, noteNumber, velocity]()
+                    juce::Component::SafePointer<MoonrunnerAudioProcessorEditor> safeEditor (editor);
+                    juce::MessageManager::callAsync ([safeEditor, noteNumber, velocity]()
                     {
-                        if (auto* moonrunnerEditor = dynamic_cast<MoonrunnerAudioProcessorEditor*> (editor))
-                        {
-                            moonrunnerEditor->updateKeyboardState (noteNumber, true, velocity);
-                        }
+                        if (safeEditor != nullptr)
+                            safeEditor->updateKeyboardState (noteNumber, true, velocity);
                     });
                 }
             }
@@ -289,14 +288,13 @@ void MoonrunnerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
             // Only update on-screen keyboard state for external MIDI (not UI-generated)
             if (!isFromUI)
             {
-                if (auto* editor = getActiveEditor())
+                if (auto* editor = dynamic_cast<MoonrunnerAudioProcessorEditor*> (getActiveEditor()))
                 {
-                    juce::MessageManager::callAsync ([editor, noteNumber]()
+                    juce::Component::SafePointer<MoonrunnerAudioProcessorEditor> safeEditor (editor);
+                    juce::MessageManager::callAsync ([safeEditor, noteNumber]()
                     {
-                        if (auto* moonrunnerEditor = dynamic_cast<MoonrunnerAudioProcessorEditor*> (editor))
-                        {
-                            moonrunnerEditor->updateKeyboardState (noteNumber, false, 0.0f);
-                        }
+                        if (safeEditor != nullptr)
+                            safeEditor->updateKeyboardState (noteNumber, false, 0.0f);
                     });
                 }
             }
@@ -325,14 +323,13 @@ void MoonrunnerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
             // Update on-screen keyboard state for external MIDI
             if (!isFromUI)
             {
-                if (auto* editor = getActiveEditor())
+                if (auto* editor = dynamic_cast<MoonrunnerAudioProcessorEditor*> (getActiveEditor()))
                 {
-                    juce::MessageManager::callAsync ([editor]()
+                    juce::Component::SafePointer<MoonrunnerAudioProcessorEditor> safeEditor (editor);
+                    juce::MessageManager::callAsync ([safeEditor]()
                     {
-                        if (auto* moonrunnerEditor = dynamic_cast<MoonrunnerAudioProcessorEditor*> (editor))
-                        {
-                            moonrunnerEditor->clearKeyboardState();
-                        }
+                        if (safeEditor != nullptr)
+                            safeEditor->clearKeyboardState();
                     });
                 }
             }

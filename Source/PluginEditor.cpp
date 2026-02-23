@@ -46,6 +46,10 @@ MoonrunnerAudioProcessorEditor::MoonrunnerAudioProcessorEditor (MoonrunnerAudioP
 
 MoonrunnerAudioProcessorEditor::~MoonrunnerAudioProcessorEditor()
 {
+    // Ensure host can request a new editor on reopen. Some hosts (e.g. Ableton) may destroy
+    // the view without going through the normal teardown, leaving activeEditor set so
+    // createEditorIfNeeded returns nullptr and the host caches "no UI" and never asks again.
+    audioProcessor.editorBeingDeleted (this);
 }
 
 void MoonrunnerAudioProcessorEditor::updateKeyboardState (int noteNumber, bool isNoteOn, float velocity)
