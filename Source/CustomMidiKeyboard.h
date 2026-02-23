@@ -13,8 +13,7 @@
 #include <set>
 
 //==============================================================================
-class CustomMidiKeyboard : public juce::Component,
-                            public juce::MidiKeyboardState::Listener
+class CustomMidiKeyboard : public juce::Component
 {
 public:
     CustomMidiKeyboard (juce::MidiKeyboardState& state);
@@ -28,9 +27,8 @@ public:
 
     void setAvailableRange (int lowestNote, int highestNote);
     
-    // MidiKeyboardState::Listener
-    void handleNoteOn (juce::MidiKeyboardState* source, int midiChannel, int midiNoteNumber, float velocity) override;
-    void handleNoteOff (juce::MidiKeyboardState* source, int midiChannel, int midiNoteNumber, float velocity) override;
+    // Direct visual state update (called from editor, not via listener callbacks)
+    void updateNoteState (int midiNoteNumber, bool isNoteOn);
     
     // Colours
     void setWhiteNoteColour (juce::Colour colour);

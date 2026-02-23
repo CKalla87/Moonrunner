@@ -14,8 +14,8 @@ CustomMidiKeyboard::CustomMidiKeyboard (juce::MidiKeyboardState& state)
     : keyboardState (state)
 {
     setMouseCursor (juce::MouseCursor::PointingHandCursor);
-    // Don't add ourselves as a listener - we'll manage pressedNotes directly
-    // This avoids callback loops and crashes
+    // Don't add as listener - we'll update visual state directly via updateNoteState()
+    // This prevents callback loops since we also call keyboardState.noteOn/noteOff
 }
 
 CustomMidiKeyboard::~CustomMidiKeyboard()
@@ -35,21 +35,21 @@ void CustomMidiKeyboard::setAvailableRange (int lowNote, int highNote)
     repaint();
 }
 
-void CustomMidiKeyboard::handleNoteOn (juce::MidiKeyboardState* source, int midiChannel, int midiNoteNumber, float velocity)
+void CustomMidiKeyboard::updateNoteState (int midiNoteNumber, bool isNoteOn)
 {
-    // This is called by external MIDI input - update visual state
+    // Direct visual state update (called from editor for external MIDI)
     if (midiNoteNumber >= lowestNote && midiNoteNumber <= highestNote)
     {
-        pressedNotes.insert (midiNoteNumber);
+        if (isNoteOn)
+        {
+            pressedNotes.insert (midiNoteNumber);
+        }
+        else
+        {
+            pressedNotes.erase (midiNoteNumber);
+        }
         repaint();
     }
-}
-
-void CustomMidiKeyboard::handleNoteOff (juce::MidiKeyboardState* source, int midiChannel, int midiNoteNumber, float velocity)
-{
-    // This is called by external MIDI input - update visual state
-    pressedNotes.erase (midiNoteNumber);
-    repaint();
 }
 
 // Key width is calculated dynamically to fill width, so this method is not needed

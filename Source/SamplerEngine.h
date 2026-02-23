@@ -62,6 +62,7 @@ private:
         float attackRate = 0.0f;
         float releaseRate = 0.0f;
         bool isKeyOn = false;
+        float lastEnvValue = 0.0f; // For envelope smoothing to prevent clicks
     };
     
     static constexpr int maxVoices = 8;

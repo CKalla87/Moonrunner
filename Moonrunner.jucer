@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
 <JUCERPROJECT id="Moonrunner1" name="Moonrunner" projectType="audioplug" useAppConfig="0"
+              pluginFormats="buildVST3,buildAU,buildStandalone,buildAAX"
               addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" cppLanguageStandard="17"
               pluginChannelConfigs="{2, 2}" companyWebsite="www.example.com"
               companyName="CK Audio Design" companyCopyright="2025" pluginManufacturerCode="CKAD"
@@ -35,6 +36,34 @@
             file="Source/CustomMidiKeyboard.cpp"/>
       <FILE id="customKb2" name="CustomMidiKeyboard.h" compile="0" resource="0"
             file="Source/CustomMidiKeyboard.h"/>
+      <FILE id="moonStyle1" name="MoonrunnerStyle.cpp" compile="1" resource="0"
+            file="Source/ui/MoonrunnerStyle.cpp"/>
+      <FILE id="moonStyle2" name="MoonrunnerStyle.h" compile="0" resource="0"
+            file="Source/ui/MoonrunnerStyle.h"/>
+      <FILE id="moonLaf1" name="MoonrunnerLookAndFeel.cpp" compile="1" resource="0"
+            file="Source/ui/MoonrunnerLookAndFeel.cpp"/>
+      <FILE id="moonLaf2" name="MoonrunnerLookAndFeel.h" compile="0" resource="0"
+            file="Source/ui/MoonrunnerLookAndFeel.h"/>
+      <FILE id="header1" name="HeaderComponent.cpp" compile="1" resource="0"
+            file="Source/components/HeaderComponent.cpp"/>
+      <FILE id="header2" name="HeaderComponent.h" compile="0" resource="0"
+            file="Source/components/HeaderComponent.h"/>
+      <FILE id="osc1" name="OscillatorComponent.cpp" compile="1" resource="0"
+            file="Source/components/OscillatorComponent.cpp"/>
+      <FILE id="osc2" name="OscillatorComponent.h" compile="0" resource="0"
+            file="Source/components/OscillatorComponent.h"/>
+      <FILE id="env1" name="EnvelopeComponent.cpp" compile="1" resource="0"
+            file="Source/components/EnvelopeComponent.cpp"/>
+      <FILE id="env2" name="EnvelopeComponent.h" compile="0" resource="0"
+            file="Source/components/EnvelopeComponent.h"/>
+      <FILE id="filter1" name="FilterComponent.cpp" compile="1" resource="0"
+            file="Source/components/FilterComponent.cpp"/>
+      <FILE id="filter2" name="FilterComponent.h" compile="0" resource="0"
+            file="Source/components/FilterComponent.h"/>
+      <FILE id="kbd1" name="KeyboardComponent.cpp" compile="1" resource="0"
+            file="Source/components/KeyboardComponent.cpp"/>
+      <FILE id="kbd2" name="KeyboardComponent.h" compile="0" resource="0"
+            file="Source/components/KeyboardComponent.h"/>
     </GROUP>
     <GROUP id="{RESOURCE_GROUP}" name="Resources"/>
   </MAINGROUP>
@@ -104,5 +133,9 @@
     <MODULE id="juce_gui_extra" showAllCode="1" useLocalCopy="0" useGlobalPath="0"/>
   </MODULES>
 </JUCERPROJECT>
+
+
+
+
 
 

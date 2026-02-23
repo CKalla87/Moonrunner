@@ -1,0 +1,80 @@
+═══════════════════════════════════════════════════════════════
+QUICK GUIDE: Rebuild Plugins as Universal Binaries
+═══════════════════════════════════════════════════════════════
+
+CURRENT STATUS:
+  ✓ Moonrunner - Already Universal (skip this one)
+  ✗ GAINFORGE - Needs rebuild
+  ✗ Ghostline - Needs rebuild  
+  ✗ Noctave - Needs rebuild
+  ✗ Obsidian Space - Needs rebuild
+
+═══════════════════════════════════════════════════════════════
+METHOD 1: Using Xcode (Recommended - Most Reliable)
+═══════════════════════════════════════════════════════════════
+
+For each plugin (GAINFORGE, Ghostline, Noctave, Obsidian Space):
+
+1. OPEN PROJECT:
+   - Go to: /Users/christopherkalla/Software Projects/[PluginName]
+   - Open: Builds/MacOSX/[PluginName].xcodeproj in Xcode
+
+2. SELECT SCHEME:
+   - Top of Xcode: Click scheme dropdown
+   - Choose: "[PluginName] - AU" or "[PluginName] - VST3"
+
+3. SET TO RELEASE:
+   - Scheme dropdown → "Edit Scheme..."
+   - Build Configuration → "Release"
+   - Click "Close"
+
+4. SET ARCHITECTURES:
+   - Click project name (blue icon) in left sidebar
+   - Select project (not target)
+   - "Build Settings" tab
+   - Search: "architectures"
+   - Set "Architectures" to: "Universal (Apple Silicon, Intel)"
+   - Set "Only Active Architecture" to: "No"
+
+5. BUILD:
+   - Press: Cmd + B
+   - Wait for "Build Succeeded"
+
+6. REPEAT:
+   - If plugin has AU + VST3, build both schemes
+   - Then move to next plugin
+
+═══════════════════════════════════════════════════════════════
+METHOD 2: Using Command Line (Faster, but may need Xcode fixes)
+═══════════════════════════════════════════════════════════════
+
+Run this for each plugin:
+
+  cd "/Users/christopherkalla/Software Projects/Moonrunner"
+  ./REBUILD_PLUGIN_UNIVERSAL.sh GAINFORGE
+  ./REBUILD_PLUGIN_UNIVERSAL.sh Ghostline
+  ./REBUILD_PLUGIN_UNIVERSAL.sh Noctave
+  ./REBUILD_PLUGIN_UNIVERSAL.sh "Obsidian Space"
+
+If command line fails, use Method 1 (Xcode) instead.
+
+═══════════════════════════════════════════════════════════════
+AFTER REBUILDING ALL PLUGINS
+═══════════════════════════════════════════════════════════════
+
+1. VERIFY:
+   cd "/Users/christopherkalla/Software Projects/Moonrunner"
+   ./CHECK_PLUGIN_COMPATIBILITY.sh
+
+   All should show: ✓ Universal Binary
+
+2. REBUILD PACKAGE:
+   cd "/Users/christopherkalla/Software Projects/Moonrunner"
+   ./CREATE_CK_AUDIO_DESIGN_PACKAGE.sh
+
+3. DONE!
+   New zip at: /Users/christopherkalla/Software Projects/CK Audio Design.zip
+   All plugins will now work on Intel + Apple Silicon Macs!
+
+═══════════════════════════════════════════════════════════════
+

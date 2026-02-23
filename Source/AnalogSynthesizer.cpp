@@ -44,10 +44,10 @@ AnalogSynthesizer::AnalogSynthesizer()
     for (int v = 0; v < maxVoices; ++v)
     {
         voices[v].oscillators[0].waveform = 0; // Saw
-        voices[v].oscillators[0].level = 0.5f;
+        voices[v].oscillators[0].level = 1.0f; // Maximum level for loud output
         voices[v].oscillators[0].octave = 0;
         voices[v].oscillators[1].waveform = 1; // Square
-        voices[v].oscillators[1].level = 0.5f;
+        voices[v].oscillators[1].level = 1.0f; // Maximum level for loud output
         voices[v].oscillators[1].octave = 0;
         
         voices[v].ampEnvelope.sustainLevel = 0.7f;
@@ -93,6 +93,8 @@ void AnalogSynthesizer::prepare (double sampleRate, int samplesPerBlock)
         voices[v].ampEnvelope.phase = 0.0f;
         voices[v].filterEnvelope.value = 0.0f;
         voices[v].filterEnvelope.phase = 0.0f;
+        voices[v].lastFiltered = 0.0f;
+        voices[v].lastEnvValue = 0.0f;
     }
     
     lfoPhase = 0.0f;
@@ -129,8 +131,9 @@ void AnalogSynthesizer::noteOn (int midiNoteNumber, float velocity)
     }
     
     int voiceIndex = findFreeVoice();
-    if (voiceIndex == -1)
-        return;
+    // findFreeVoice now always returns a valid voice index (steals if needed)
+    if (voiceIndex < 0 || voiceIndex >= maxVoices)
+        return; // Safety check only
     
     Voice& voice = voices[voiceIndex];
     voice.isActive = true;
@@ -196,12 +199,66 @@ void AnalogSynthesizer::allNotesOff()
 
 int AnalogSynthesizer::findFreeVoice()
 {
+    // First, try to find a completely inactive voice
     for (int v = 0; v < maxVoices; ++v)
     {
-        if (!voices[v].isActive || voices[v].ampEnvelope.value < 0.001f)
+        if (!voices[v].isActive)
             return v;
     }
-    return -1;
+    
+    // If all voices are active, find one that's fully released (in release phase and envelope is zero)
+    for (int v = 0; v < maxVoices; ++v)
+    {
+        if (voices[v].ampEnvelope.value < 0.001f && voices[v].ampEnvelope.phase == 3.0f)
+        {
+            // Voice is fully released, can be reused
+            voices[v].isActive = false;
+            return v;
+        }
+    }
+    
+    // If still no free voice, steal one - prefer voices in release phase (quieter)
+    // First, look for voices already in release phase
+    int stealIndex = -1;
+    float lowestValue = 1.0f;
+    for (int v = 0; v < maxVoices; ++v)
+    {
+        if (voices[v].ampEnvelope.phase == 3.0f) // In release phase
+        {
+            if (voices[v].ampEnvelope.value < lowestValue)
+            {
+                lowestValue = voices[v].ampEnvelope.value;
+                stealIndex = v;
+            }
+        }
+    }
+    
+    // If no voice in release, steal the quietest one (regardless of phase)
+    // This ensures we always return a voice, even if all are in sustain
+    if (stealIndex == -1)
+    {
+        stealIndex = 0;
+        lowestValue = voices[0].ampEnvelope.value;
+        for (int v = 1; v < maxVoices; ++v)
+        {
+            if (voices[v].ampEnvelope.value < lowestValue)
+            {
+                lowestValue = voices[v].ampEnvelope.value;
+                stealIndex = v;
+            }
+        }
+    }
+    
+    // Steal the voice - ensure it's properly reset
+    if (stealIndex >= 0)
+    {
+        voices[stealIndex].ampEnvelope.isKeyOn = false;
+        voices[stealIndex].ampEnvelope.phase = 3.0f; // Release
+        voices[stealIndex].filterEnvelope.isKeyOn = false;
+        voices[stealIndex].filterEnvelope.phase = 3.0f; // Release
+    }
+    
+    return stealIndex;
 }
 
 int AnalogSynthesizer::findVoiceForNote (int midiNote)
@@ -216,21 +273,66 @@ int AnalogSynthesizer::findVoiceForNote (int midiNote)
 
 float AnalogSynthesizer::generateWaveform (const Oscillator& osc)
 {
-    float phase = std::fmod (osc.phase, juce::MathConstants<float>::twoPi);
+    // Normalize phase to [0, 2π] range - use fmod for smooth wrapping
+    float phase = std::fmod (osc.phase + juce::MathConstants<float>::twoPi, juce::MathConstants<float>::twoPi);
     
     switch (osc.waveform)
     {
-        case 0: // Sawtooth
-            return 2.0f * (phase / juce::MathConstants<float>::twoPi) - 1.0f;
-        case 1: // Square
-            return phase < juce::MathConstants<float>::pi ? 1.0f : -1.0f;
+        case 0: // Sawtooth - improved smoothing at wrap-around to prevent clicks
+        {
+            // Improved sawtooth with better smoothing at wrap-around
+            float saw = 2.0f * (phase / juce::MathConstants<float>::twoPi) - 1.0f;
+            // Apply gentle smoothing near wrap-around to reduce clicks without reducing volume
+            float wrapZone = 0.005f; // Smaller zone for smoother transition
+            if (phase < wrapZone)
+            {
+                // Smooth fade-in from -1.0
+                float fade = phase / wrapZone;
+                saw = -1.0f + (saw + 1.0f) * fade;
+            }
+            else if (phase > juce::MathConstants<float>::twoPi - wrapZone)
+            {
+                // Smooth fade-out to -1.0
+                float fade = (juce::MathConstants<float>::twoPi - phase) / wrapZone;
+                float nextSaw = -1.0f; // Value after wrap
+                saw = saw * fade + nextSaw * (1.0f - fade);
+            }
+            return saw;
+        }
+        case 1: // Square - use smoothed transition
+        {
+            // Soft square wave with slight smoothing to reduce aliasing
+            float softness = 0.02f; // Small transition zone
+            if (phase < juce::MathConstants<float>::pi - softness)
+                return 1.0f;
+            else if (phase > juce::MathConstants<float>::pi + softness)
+                return -1.0f;
+            else
+            {
+                // Smooth transition
+                float t = (phase - (juce::MathConstants<float>::pi - softness)) / (2.0f * softness);
+                return 1.0f - 2.0f * t;
+            }
+        }
         case 2: // Pulse
         {
             float threshold = osc.pulseWidth * juce::MathConstants<float>::twoPi;
-            return phase < threshold ? 1.0f : -1.0f;
+            // Smooth pulse wave transition
+            float softness = 0.02f;
+            if (phase < threshold - softness)
+                return 1.0f;
+            else if (phase > threshold + softness)
+                return -1.0f;
+            else
+            {
+                float t = (phase - (threshold - softness)) / (2.0f * softness);
+                return 1.0f - 2.0f * t;
+            }
         }
-        case 3: // Triangle
+        case 3: // Triangle - already smooth
             return 2.0f * std::abs (phase / juce::MathConstants<float>::pi - 1.0f) - 1.0f;
+        case 4: // Sine
+            return std::sin (phase);
         default:
             return 2.0f * (phase / juce::MathConstants<float>::twoPi) - 1.0f;
     }
@@ -356,6 +458,10 @@ void AnalogSynthesizer::renderNextBlock (juce::AudioBuffer<float>& outputBuffer,
                     voice.oscillators[osc].phaseIncrement = freq / static_cast<float> (sampleRate) * juce::MathConstants<float>::twoPi;
                     voice.oscillators[osc].phase += voice.oscillators[osc].phaseIncrement;
                     
+                    // Wrap phase smoothly using fmod to prevent discontinuities
+                    voice.oscillators[osc].phase = std::fmod (voice.oscillators[osc].phase + juce::MathConstants<float>::twoPi, 
+                                                              juce::MathConstants<float>::twoPi);
+                    
                     oscOutput += generateWaveform (voice.oscillators[osc]) * voice.oscillators[osc].level;
                 }
                 
@@ -378,46 +484,49 @@ void AnalogSynthesizer::renderNextBlock (juce::AudioBuffer<float>& outputBuffer,
                 
                 cutoff = juce::jlimit (20.0f, 20000.0f, cutoff);
                 
-                // Process through filter (per-voice filter would be better, but for now use shared filter)
-                // Process through filter
-                // Use per-voice filter cutoff but limit Q to prevent instability
-                float qFactor = 0.1f + (filterResonance * 4.9f);
-                qFactor = juce::jlimit (0.1f, 5.0f, qFactor); // Extra safety
+                // Simple one-pole filter processing (avoids per-sample temp buffer creation)
+                // Use a simpler approach: apply a soft low-pass directly to reduce artifacts
+                float qFactor = 0.1f + (filterResonance * 2.5f); // Lower max Q to prevent instability
+                qFactor = juce::jlimit (0.1f, 2.5f, qFactor);
                 
-                // Update filter coefficients (only if cutoff changed significantly to reduce CPU)
-                static float lastCutoff = 0.0f;
-                static float lastQ = 0.0f;
-                if (std::abs (cutoff - lastCutoff) > 50.0f || std::abs (qFactor - lastQ) > 0.1f)
+                // Simple one-pole filter for smooth sound (less artifacts than full IIR per sample)
+                float filterAlpha = juce::jlimit (0.0f, 1.0f, cutoff / (cutoff + static_cast<float>(sampleRate) / (2.0f * qFactor)));
+                float filteredOutput = voice.lastFiltered * (1.0f - filterAlpha) + oscOutput * filterAlpha;
+                voice.lastFiltered = filteredOutput;
+                
+                // Apply amplitude envelope with smooth interpolation - keep volume high
+                float envelopeValue = voice.ampEnvelope.value;
+                
+                // Smooth envelope transitions to prevent clicks WITHOUT reducing volume
+                // Interpolate between last and current envelope value smoothly
+                float smoothedEnv = envelopeValue;
+                if (std::abs (envelopeValue - voice.lastEnvValue) > 0.001f)
                 {
-                    *filter.coefficients = *juce::dsp::IIR::Coefficients<float>::makeLowPass (
-                        sampleRate, cutoff, qFactor);
-                    lastCutoff = cutoff;
-                    lastQ = qFactor;
+                    // Fast but smooth transition - doesn't reduce volume, just smooths jumps
+                    float envDiff = envelopeValue - voice.lastEnvValue;
+                    smoothedEnv = voice.lastEnvValue + envDiff * 0.3f; // Fast smoothing, minimal volume reduction
                 }
                 
-                // Process through filter (using a temporary buffer)
-                float filteredOutput = oscOutput;
-                juce::AudioBuffer<float> tempBuffer (1, 1);
-                tempBuffer.setSample (0, 0, filteredOutput);
-                juce::dsp::AudioBlock<float> block (tempBuffer);
-                juce::dsp::ProcessContextReplacing<float> context (block);
-                filter.process (context);
-                filteredOutput = tempBuffer.getSample (0, 0);
+                // Much louder to match Sampler - increased significantly
+                float voiceOutput = filteredOutput * smoothedEnv * voice.velocity * 3.5f;
+                voice.lastEnvValue = smoothedEnv;
                 
-                // Prevent filter instability and clipping
-                filteredOutput = juce::jlimit (-1.5f, 1.5f, filteredOutput);
+                // Process chorus (keep volume high)
+                if (chorusEnabled)
+                {
+                    voiceOutput = processChorus (voiceOutput * 0.9f) * 1.1f; // Less reduction, keeps more volume
+                }
                 
-                // Apply amplitude envelope
-                float voiceOutput = filteredOutput * voice.ampEnvelope.value * voice.velocity;
-                
-                // Process chorus
-                voiceOutput = processChorus (voiceOutput);
+                // Prevent clipping but allow higher headroom
+                voiceOutput = juce::jlimit (-1.2f, 1.2f, voiceOutput);
                 
                 // Check if voice should be deactivated (fully released)
-                if (voice.ampEnvelope.value <= 0.001f && voice.ampEnvelope.phase == 3.0f)
+                if (envelopeValue <= 0.001f && voice.ampEnvelope.phase == 3.0f)
                 {
                     voice.isActive = false;
                     voice.ampEnvelope.value = 0.0f;
+                    voice.lastFiltered = 0.0f;
+                    voice.lastEnvValue = 0.0f;
                 }
                 else
                 {
@@ -430,8 +539,16 @@ void AnalogSynthesizer::renderNextBlock (juce::AudioBuffer<float>& outputBuffer,
         lfoPhase += lfoIncrement;
         lfoPhase = std::fmod (lfoPhase, juce::MathConstants<float>::twoPi);
         
-        // Prevent clipping and scale down
-        output = juce::jlimit (-1.0f, 1.0f, output * 0.3f);
+        // Final output - much louder to match Sampler
+        output = juce::jlimit (-1.0f, 1.0f, output * 1.5f); // Significant boost
+        
+        // Soft saturation for warmth - prevents harsh clipping while keeping volume
+        if (std::abs (output) > 0.85f)
+        {
+            float sign = output > 0.0f ? 1.0f : -1.0f;
+            float absOutput = std::abs (output);
+            output = sign * (0.85f + 0.15f * std::tanh ((absOutput - 0.85f) * 8.0f));
+        }
         
         // Write to output buffer
         for (int channel = 0; channel < outputBuffer.getNumChannels(); ++channel)

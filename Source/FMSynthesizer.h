@@ -43,6 +43,16 @@ public:
     void setLFOAmount (float amount);
     void setPitchBend (float semitones);
     
+    // Convenience methods to set ADSR for all operators (for UI parameter binding)
+    void setEnvelopeAttack (float attackSeconds);
+    void setEnvelopeDecay (float decaySeconds);
+    void setEnvelopeSustain (float sustainLevel);
+    void setEnvelopeRelease (float releaseSeconds);
+    
+    // Filter for better sound quality
+    void setFilterCutoff (float cutoffHz);
+    void setFilterResonance (float resonance);
+    
 private:
     // FM Operator structure
     struct FMOperator
@@ -83,6 +93,11 @@ private:
     float lfoFrequency = 0.5f;
     float lfoAmount = 0.0f;
     
+    // Filter for better sound quality (especially low end)
+    juce::dsp::IIR::Filter<float> filter;
+    float filterCutoffBase = 8000.0f;
+    float filterResonance = 0.5f;
+    
     double sampleRate = 44100.0;
     
     // Helper functions
@@ -92,10 +107,15 @@ private:
     int findFreeVoice();
     int findVoiceForNote (int midiNote);
     float midiNoteToFrequency (int midiNote);
+    void updateFilter();
     
     // Algorithm routing (simplified - DX7 had complex routing)
     float processAlgorithm (Voice& voice, int algorithm);
 };
+
+
+
+
 
 
 

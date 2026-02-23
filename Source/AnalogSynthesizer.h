@@ -106,6 +106,8 @@ private:
         int midiNote = -1;
         float pitchBend = 0.0f;
         float filterCutoff = 1000.0f;
+        float lastFiltered = 0.0f; // Per-voice filter state
+        float lastEnvValue = 0.0f; // Per-voice envelope smoothing
     };
     
     static constexpr int maxVoices = 8; // Polyphonic like Prophet-5

@@ -136,8 +136,9 @@ void SamplerEngine::noteOn (int midiNoteNumber, float velocity)
     }
     
     int voiceIndex = findFreeVoice();
-    if (voiceIndex == -1)
-        return;
+    // findFreeVoice now always returns a valid voice index (steals if needed)
+    if (voiceIndex < 0 || voiceIndex >= maxVoices)
+        return; // Safety check only
     
     Voice& voice = voices[voiceIndex];
     voice.isActive = true;
@@ -148,6 +149,7 @@ void SamplerEngine::noteOn (int midiNoteNumber, float velocity)
     voice.isKeyOn = true;
     voice.envelopeValue = 0.0f;
     voice.envelopePhase = 0.0f;
+    voice.lastEnvValue = 0.0f; // Reset envelope smoothing
     
     // Initialize envelope rates based on current attack/release times
     float safeAttack = juce::jmax (0.001f, currentAttackTime);
@@ -188,12 +190,65 @@ void SamplerEngine::allNotesOff()
 
 int SamplerEngine::findFreeVoice()
 {
+    // First, try to find a completely inactive voice
     for (int v = 0; v < maxVoices; ++v)
     {
-        if (!voices[v].isActive || voices[v].envelopeValue < 0.001f)
+        if (!voices[v].isActive)
             return v;
     }
-    return -1;
+    
+    // If all voices are active, find one that's fully released
+    for (int v = 0; v < maxVoices; ++v)
+    {
+        if (voices[v].envelopeValue < 0.001f && voices[v].envelopePhase == 1.0f && !voices[v].isKeyOn)
+        {
+            // Voice is fully released, can be reused
+            voices[v].isActive = false;
+            return v;
+        }
+    }
+    
+    // If still no free voice, steal one - prefer voices in release phase
+    int stealIndex = -1;
+    float lowestValue = 1.0f;
+    
+    // First, look for voices already in release phase
+    for (int v = 0; v < maxVoices; ++v)
+    {
+        if (voices[v].envelopePhase == 1.0f) // In release phase
+        {
+            if (voices[v].envelopeValue < lowestValue)
+            {
+                lowestValue = voices[v].envelopeValue;
+                stealIndex = v;
+            }
+        }
+    }
+    
+    // If no voice in release, steal the quietest one (regardless of phase)
+    // This ensures we always return a voice, even if all are in sustain
+    if (stealIndex == -1)
+    {
+        stealIndex = 0;
+        lowestValue = voices[0].envelopeValue;
+        for (int v = 1; v < maxVoices; ++v)
+        {
+            if (voices[v].envelopeValue < lowestValue)
+            {
+                lowestValue = voices[v].envelopeValue;
+                stealIndex = v;
+            }
+        }
+    }
+    
+    // Steal the voice - ensure it's properly reset
+    if (stealIndex >= 0)
+    {
+        voices[stealIndex].isKeyOn = false;
+        voices[stealIndex].envelopePhase = 1.0f; // Release
+    }
+    
+    return stealIndex;
 }
 
 int SamplerEngine::findVoiceForNote (int midiNote)
@@ -233,8 +288,13 @@ float SamplerEngine::readSample (const Voice& voice)
     if (!hasSample || sampleBuffer.getNumSamples() == 0)
         return 0.0f;
     
-    int position = static_cast<int> (voice.currentPosition);
-    float fraction = voice.currentPosition - position;
+    // Clamp position to valid range to prevent crashes
+    float clampedPosition = juce::jlimit (0.0f, static_cast<float> (sampleBuffer.getNumSamples() - 1), voice.currentPosition);
+    int position = static_cast<int> (clampedPosition);
+    float fraction = clampedPosition - position;
+    
+    // Ensure position is within bounds
+    position = juce::jlimit (0, sampleBuffer.getNumSamples() - 1, position);
     
     // Handle looping
     if (loopEnabled)
@@ -244,18 +304,17 @@ float SamplerEngine::readSample (const Voice& voice)
         if (position < loopStart)
             position = loopStart;
     }
-    else
-    {
-        if (position >= sampleBuffer.getNumSamples())
-            return 0.0f;
-    }
     
-    // Linear interpolation
+    // Linear interpolation with safe bounds checking
     int nextPosition = position + 1;
     if (loopEnabled && nextPosition >= loopEnd)
         nextPosition = loopStart;
     else if (nextPosition >= sampleBuffer.getNumSamples())
         nextPosition = sampleBuffer.getNumSamples() - 1;
+    
+    // Final safety check
+    position = juce::jlimit (0, sampleBuffer.getNumSamples() - 1, position);
+    nextPosition = juce::jlimit (0, sampleBuffer.getNumSamples() - 1, nextPosition);
     
     float sample1 = sampleBuffer.getSample (0, position);
     float sample2 = sampleBuffer.getSample (0, nextPosition);
@@ -289,55 +348,92 @@ void SamplerEngine::renderNextBlock (juce::AudioBuffer<float>& outputBuffer, int
                 // Read sample
                 float sampleValue = readSample (voice);
                 
-                // Apply envelope and velocity
-                sampleValue *= voice.envelopeValue * voice.velocity;
+                // Apply envelope with smoothing to prevent clicks during sustain changes
+                float envelopeValue = voice.envelopeValue;
+                float voiceOutput = sampleValue * envelopeValue * voice.velocity * 0.7f; // Scale down for headroom
                 
-                // Process through filter (using a temporary buffer)
-                float filteredSample = sampleValue;
-                juce::AudioBuffer<float> tempBuffer (1, 1);
-                tempBuffer.setSample (0, 0, filteredSample);
-                juce::dsp::AudioBlock<float> block (tempBuffer);
-                juce::dsp::ProcessContextReplacing<float> context (block);
-                filter.process (context);
-                filteredSample = tempBuffer.getSample (0, 0);
+                // Smooth envelope transitions to prevent clicks
+                if (std::abs (envelopeValue - voice.lastEnvValue) > 0.01f)
+                {
+                    // Smooth large envelope changes
+                    voiceOutput = voiceOutput * 0.7f + (sampleValue * voice.lastEnvValue * voice.velocity * 0.7f) * 0.3f;
+                }
+                voice.lastEnvValue = envelopeValue;
                 
-                output += filteredSample;
+                // Prevent clipping and crackling
+                voiceOutput = juce::jlimit (-0.95f, 0.95f, voiceOutput);
                 
-                // Update position
-                voice.currentPosition += currentSpeed;
+                // Soft saturation for warmth
+                if (std::abs (voiceOutput) > 0.8f)
+                {
+                    float sign = voiceOutput > 0.0f ? 1.0f : -1.0f;
+                    float absOutput = std::abs (voiceOutput);
+                    voiceOutput = sign * (0.8f + 0.15f * std::tanh ((absOutput - 0.8f) * 8.0f));
+                }
+                
+                output += voiceOutput;
+                
+                // Update position with smooth wrapping to prevent clicks
+                float newPosition = voice.currentPosition + currentSpeed;
                 
                 // Check bounds
                 if (loopEnabled)
                 {
-                    if (voice.currentPosition >= loopEnd)
-                        voice.currentPosition = loopStart + std::fmod (voice.currentPosition - loopStart, loopEnd - loopStart);
+                    if (newPosition >= loopEnd)
+                    {
+                        // Smooth loop wrap
+                        newPosition = loopStart + std::fmod (newPosition - loopStart, loopEnd - loopStart);
+                        // Smooth transition at loop point to prevent clicks
+                        voice.currentPosition = voice.currentPosition * 0.9f + newPosition * 0.1f;
+                    }
+                    else
+                    {
+                        voice.currentPosition = newPosition;
+                    }
                 }
                 else
                 {
-                    if (voice.currentPosition >= sampleBuffer.getNumSamples())
+                    if (newPosition >= sampleBuffer.getNumSamples())
                     {
-                        // Sample ended - start release if not already
+                        // Sample ended - smoothly fade out position
+                        voice.currentPosition = static_cast<float> (sampleBuffer.getNumSamples() - 1);
                         if (voice.isKeyOn)
                         {
                             voice.isKeyOn = false;
                             voice.envelopePhase = 1.0f; // Release
                         }
                     }
+                    else
+                    {
+                        voice.currentPosition = newPosition;
+                    }
                 }
                 
                 // Check if voice should be deactivated (fully released)
-                if (voice.envelopeValue <= 0.001f && !voice.isKeyOn)
+                if (envelopeValue <= 0.001f && voice.envelopePhase == 1.0f && !voice.isKeyOn)
                 {
                     voice.isActive = false;
                     voice.envelopeValue = 0.0f;
+                    voice.lastEnvValue = 0.0f;
                 }
             }
+        }
+        
+        // Scale output to prevent clipping with multiple voices
+        output = juce::jlimit (-0.9f, 0.9f, output);
+        
+        // Soft saturation for warmth and to prevent harsh clipping
+        if (std::abs (output) > 0.8f)
+        {
+            float sign = output > 0.0f ? 1.0f : -1.0f;
+            float absOutput = std::abs (output);
+            output = sign * (0.8f + 0.1f * std::tanh ((absOutput - 0.8f) * 10.0f));
         }
         
         // Write to output buffer
         for (int channel = 0; channel < outputBuffer.getNumChannels(); ++channel)
         {
-            outputBuffer.addSample (channel, sample, output * 0.5f); // Scale down
+            outputBuffer.addSample (channel, sample, output);
         }
     }
 }

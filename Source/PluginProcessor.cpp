@@ -75,6 +75,15 @@ MoonrunnerAudioProcessor::MoonrunnerAudioProcessor()
            lfoWaveformParam = apvts->getRawParameterValue("LFO_WAVEFORM");
            lfoDestinationParam = apvts->getRawParameterValue("LFO_DESTINATION");
            oscWaveformParam = apvts->getRawParameterValue("OSC_WAVEFORM");
+
+           // Moonrunner v2 UI params
+           oscTypeParam = apvts->getRawParameterValue("oscType");
+           attack2Param = apvts->getRawParameterValue("attack");
+           decay2Param = apvts->getRawParameterValue("decay");
+           sustain2Param = apvts->getRawParameterValue("sustain");
+           release2Param = apvts->getRawParameterValue("release");
+           cutoffParam = apvts->getRawParameterValue("cutoff");
+           resonanceParam = apvts->getRawParameterValue("resonance");
            
            logToFile("Parameters retrieved");
            DBG("Moonrunner: Parameters retrieved");
@@ -334,24 +343,44 @@ void MoonrunnerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
         }
     }
 
-    // Apply synth parameters
-    if (currentSynthesisMode == 1) // Analog
+    // Apply synth parameters (use v2 UI params: attack, decay, sustain, release, cutoff, resonance)
+    if (currentSynthesisMode == 0) // FM
     {
-        // ADSR Envelope
-        if (attackParam != nullptr)
-            analogSynth.setEnvelopeAttack (attackParam->load());
-        if (decayParam != nullptr)
-            analogSynth.setEnvelopeDecay (decayParam->load());
-        if (sustainParam != nullptr)
-            analogSynth.setEnvelopeSustain (sustainParam->load());
-        if (releaseParam != nullptr)
-            analogSynth.setEnvelopeRelease (releaseParam->load());
+        // ADSR Envelope - use v2 params so UI sliders work
+        auto atk = (attack2Param != nullptr) ? attack2Param->load() : (attackParam ? attackParam->load() : 0.1f);
+        auto dcy = (decay2Param != nullptr) ? decay2Param->load() : (decayParam ? decayParam->load() : 0.3f);
+        auto sus = (sustain2Param != nullptr) ? sustain2Param->load() : (sustainParam ? sustainParam->load() : 0.7f);
+        auto rel = (release2Param != nullptr) ? release2Param->load() : (releaseParam ? releaseParam->load() : 0.5f);
+        fmSynth.setEnvelopeAttack (atk);
+        fmSynth.setEnvelopeDecay (dcy);
+        fmSynth.setEnvelopeSustain (sus);
+        fmSynth.setEnvelopeRelease (rel);
         
-        // Filter
-        if (filterCutoffParam != nullptr)
-            analogSynth.setFilterCutoff (filterCutoffParam->load());
-        if (filterResonanceParam != nullptr)
-            analogSynth.setFilterResonance (filterResonanceParam->load());
+        // Filter - use v2 params (resonance 0.1-20 -> 0-0.9)
+        auto cut = (cutoffParam != nullptr) ? cutoffParam->load() : (filterCutoffParam ? filterCutoffParam->load() : 2000.0f);
+        auto res = (resonanceParam != nullptr) ? juce::jlimit (0.0f, 0.9f, (resonanceParam->load() - 0.1f) / 19.9f)
+                                               : (filterResonanceParam ? filterResonanceParam->load() : 0.5f);
+        fmSynth.setFilterCutoff (cut);
+        fmSynth.setFilterResonance (res);
+    }
+    else if (currentSynthesisMode == 1) // Analog
+    {
+        // ADSR Envelope (prefer v2 params)
+        auto atk = (attack2Param != nullptr) ? attack2Param->load() : (attackParam ? attackParam->load() : 0.1f);
+        auto dcy = (decay2Param != nullptr) ? decay2Param->load() : (decayParam ? decayParam->load() : 0.3f);
+        auto sus = (sustain2Param != nullptr) ? sustain2Param->load() : (sustainParam ? sustainParam->load() : 0.7f);
+        auto rel = (release2Param != nullptr) ? release2Param->load() : (releaseParam ? releaseParam->load() : 0.5f);
+        analogSynth.setEnvelopeAttack (atk);
+        analogSynth.setEnvelopeDecay (dcy);
+        analogSynth.setEnvelopeSustain (sus);
+        analogSynth.setEnvelopeRelease (rel);
+
+        // Filter (prefer v2 params; map resonance 0.1-20 to 0-0.9)
+        auto cut = (cutoffParam != nullptr) ? cutoffParam->load() : (filterCutoffParam ? filterCutoffParam->load() : 2000.0f);
+        auto res = (resonanceParam != nullptr) ? juce::jlimit (0.0f, 0.9f, (resonanceParam->load() - 0.1f) / 19.9f)
+                                               : (filterResonanceParam ? filterResonanceParam->load() : 0.5f);
+        analogSynth.setFilterCutoff (cut);
+        analogSynth.setFilterResonance (res);
         
         // LFO
         if (lfoRateParam != nullptr)
@@ -363,27 +392,26 @@ void MoonrunnerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
         if (lfoDestinationParam != nullptr)
             analogSynth.setLFODestination (static_cast<int>(lfoDestinationParam->load()));
         
-        // Oscillator
-        if (oscWaveformParam != nullptr)
-        {
-            int waveform = static_cast<int>(oscWaveformParam->load());
-            analogSynth.setOscillatorWaveform (0, waveform);
-            analogSynth.setOscillatorWaveform (1, waveform);
-        }
+        // Oscillator (oscType: 0=sine, 1=square, 2=sawtooth, 3=triangle -> Analog: 4=sine, 1=square, 0=saw, 3=triangle)
+        int oscIdx = (oscTypeParam != nullptr) ? juce::roundToInt (oscTypeParam->load() * 3.0f) : 2;
+        int waveform = (oscIdx == 0) ? 4 : (oscIdx == 1) ? 1 : (oscIdx == 2) ? 0 : 3;  // sine=4 (add to Analog)
+        analogSynth.setOscillatorWaveform (0, waveform);
+        analogSynth.setOscillatorWaveform (1, waveform);
     }
     else if (currentSynthesisMode == 2) // Sampler
     {
-        // ADSR Envelope (Sampler only has Attack and Release)
-        if (attackParam != nullptr)
-            samplerEngine.setAttack (attackParam->load());
-        if (releaseParam != nullptr)
-            samplerEngine.setRelease (releaseParam->load());
+        // Attack/Release - use v2 params so UI sliders work
+        auto atk = (attack2Param != nullptr) ? attack2Param->load() : (attackParam ? attackParam->load() : 0.1f);
+        auto rel = (release2Param != nullptr) ? release2Param->load() : (releaseParam ? releaseParam->load() : 0.5f);
+        samplerEngine.setAttack (atk);
+        samplerEngine.setRelease (rel);
         
-        // Filter
-        if (filterCutoffParam != nullptr)
-            samplerEngine.setFilterCutoff (filterCutoffParam->load());
-        if (filterResonanceParam != nullptr)
-            samplerEngine.setFilterResonance (filterResonanceParam->load());
+        // Filter - use v2 params (resonance 0.1-20 -> 0-0.9)
+        auto cut = (cutoffParam != nullptr) ? cutoffParam->load() : (filterCutoffParam ? filterCutoffParam->load() : 2000.0f);
+        auto res = (resonanceParam != nullptr) ? juce::jlimit (0.0f, 0.9f, (resonanceParam->load() - 0.1f) / 19.9f)
+                                               : (filterResonanceParam ? filterResonanceParam->load() : 0.5f);
+        samplerEngine.setFilterCutoff (cut);
+        samplerEngine.setFilterResonance (res);
     }
 
     // Render audio from the active synthesis engine
@@ -474,11 +502,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout MoonrunnerAudioProcessor::cr
     fprintf(stderr, "Moonrunner: Creating SYNTHESIS_MODE parameter\n");
     fflush(stderr);
     DBG("Moonrunner: Creating SYNTHESIS_MODE parameter");
-    // Synthesis Mode: 0=FM, 1=Analog, 2=Sampler
+    // Synthesis Mode: 0=FM, 1=Analog, 2=Sampler (default Analog for v2 UI)
     params.push_back (std::make_unique<juce::AudioParameterChoice>(
         juce::ParameterID ("SYNTHESIS_MODE", 1), "Synthesis Mode",
         juce::StringArray ("FM", "Analog", "Sampler"),
-        0
+        1
     ));
 
     fprintf(stderr, "Moonrunner: Creating MASTER_VOLUME parameter\n");
@@ -562,6 +590,43 @@ juce::AudioProcessorValueTreeState::ParameterLayout MoonrunnerAudioProcessor::cr
         juce::ParameterID ("OSC_WAVEFORM", 1), "Oscillator Waveform",
         juce::StringArray ("Saw", "Square", "Pulse", "Triangle"),
         0
+    ));
+
+    // New Moonrunner v2 UI parameters
+    params.push_back (std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID ("oscType", 2), "Oscillator Type",
+        juce::StringArray ("sine", "square", "sawtooth", "triangle"),
+        2  // sawtooth default
+    ));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID ("attack", 2), "Attack",
+        juce::NormalisableRange<float> (0.01f, 2.0f, 0.01f),
+        0.1f, "s"
+    ));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID ("decay", 2), "Decay",
+        juce::NormalisableRange<float> (0.01f, 2.0f, 0.01f),
+        0.3f, "s"
+    ));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID ("sustain", 2), "Sustain",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f),
+        0.7f, ""
+    ));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID ("release", 2), "Release",
+        juce::NormalisableRange<float> (0.01f, 3.0f, 0.01f),
+        0.5f, "s"
+    ));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID ("cutoff", 2), "Cutoff",
+        juce::NormalisableRange<float> (100.0f, 8000.0f, 10.0f),
+        2000.0f, "Hz"
+    ));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID ("resonance", 2), "Resonance",
+        juce::NormalisableRange<float> (0.1f, 20.0f, 0.1f),
+        1.0f, ""
     ));
 
     fprintf(stderr, "Moonrunner: createParameterLayout() complete, returning layout\n");

@@ -89,6 +89,18 @@ public:
     std::atomic<float>* lfoDestinationParam = nullptr;
     std::atomic<float>* oscWaveformParam = nullptr;
 
+    // Moonrunner v2 UI params
+    std::atomic<float>* oscTypeParam = nullptr;
+    std::atomic<float>* attack2Param = nullptr;
+    std::atomic<float>* decay2Param = nullptr;
+    std::atomic<float>* sustain2Param = nullptr;
+    std::atomic<float>* release2Param = nullptr;
+    std::atomic<float>* cutoffParam = nullptr;
+    std::atomic<float>* resonanceParam = nullptr;
+
+    // Active note count for UI (IDLE/ACTIVE pill, meter animation)
+    std::atomic<int> activeNoteCount { 0 };
+
 private:
     //==============================================================================
     FMSynthesizer fmSynth;
