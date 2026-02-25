@@ -28,10 +28,6 @@
             file="Source/AnalogSynthesizer.cpp"/>
       <FILE id="analogSynth2" name="AnalogSynthesizer.h" compile="0" resource="0"
             file="Source/AnalogSynthesizer.h"/>
-      <FILE id="padSynth1" name="PadSynthesizer.cpp" compile="1" resource="0"
-            file="Source/PadSynthesizer.cpp"/>
-      <FILE id="padSynth2" name="PadSynthesizer.h" compile="0" resource="0"
-            file="Source/PadSynthesizer.h"/>
       <FILE id="sampler1" name="SamplerEngine.cpp" compile="1" resource="0"
             file="Source/SamplerEngine.cpp"/>
       <FILE id="sampler2" name="SamplerEngine.h" compile="0" resource="0"

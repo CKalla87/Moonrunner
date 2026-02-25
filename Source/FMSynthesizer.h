@@ -2,7 +2,7 @@
   ==============================================================================
 
     FMSynthesizer.h
-    FM Synthesis Engine - Inspired by Yamaha DX7
+    Analog-style synthesis - Moog-inspired saw oscillators + ladder filter
 
   ==============================================================================
 */
@@ -13,7 +13,8 @@
 
 //==============================================================================
 /**
-    FM Synthesis Engine - 6-operator FM synthesis inspired by Yamaha DX7
+    Analog-style synth: detuned saw oscillators + 24dB Moog ladder filter
+    (Legacy 6-operator FM algorithms still available via setAlgorithm)
 */
 class FMSynthesizer
 {
@@ -88,15 +89,16 @@ private:
     static constexpr int maxVoices = 16;
     Voice voices[maxVoices];
     
-    int currentAlgorithm = 0; // Default algorithm
+    int currentAlgorithm = 2; // Default: Moog-style parallel saws
     float lfoPhase = 0.0f;
     float lfoFrequency = 0.5f;
     float lfoAmount = 0.0f;
     
-    // Filter for better sound quality (especially low end)
-    juce::dsp::IIR::Filter<float> filter;
-    float filterCutoffBase = 8000.0f;
-    float filterResonance = 0.5f;
+    // Moog-style ladder filter (24dB/octave lowpass)
+    juce::dsp::LadderFilter<float> ladderFilter;
+    juce::AudioBuffer<float> ladderBuffer { 2, 1 };
+    float filterCutoffBase = 2800.0f;
+    float filterResonance = 0.6f;
     
     double sampleRate = 44100.0;
     

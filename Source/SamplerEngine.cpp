@@ -2,102 +2,69 @@
   ==============================================================================
 
     SamplerEngine.cpp
-    Sampler Engine - Inspired by Fairlight CMI
+    Industrial Bass Synth - NIN "Head Like a Hole" style
 
   ==============================================================================
 */
 
 #include "SamplerEngine.h"
-#include <ctime>
-#include <cstdlib>
-#include <cstdio>
 
-//==============================================================================
-// Forward declare logging
-static void logToFile(const char* message)
+namespace
 {
-    static FILE* logFile = nullptr;
-    if (logFile == nullptr)
+    // Detune amounts in cents for thick industrial unison (NIN Head Like a Hole)
+    constexpr float kDetuneCents[4] = { -25.0f, -10.0f, 10.0f, 25.0f };
+
+    inline float saw (float phase)
     {
-        const char* home = getenv("HOME");
-        if (home != nullptr)
-        {
-            char path[1024];
-            snprintf(path, sizeof(path), "%s/moonrunner_debug.log", home);
-            logFile = fopen(path, "a");
-        }
+        return 2.0f * phase - 1.0f;
     }
-    if (logFile != nullptr)
+
+    // Heavy NIN-style distortion - hard clipping + waveshaping
+    inline float distort (float x)
     {
-        fprintf(logFile, "[%ld] %s\n", time(nullptr), message);
-        fflush(logFile);
+        x *= 4.5f;  // Drive into saturation
+        return std::tanh (x) * 0.95f;
     }
-    fprintf(stderr, "Moonrunner: %s\n", message);
-    fflush(stderr);
 }
 
+//==============================================================================
 SamplerEngine::SamplerEngine()
 {
-    logToFile("SamplerEngine constructor start");
-    DBG("Moonrunner: SamplerEngine constructor start");
-    sampleBuffer.setSize (2, 0); // Stereo, empty initially
-    logToFile("SamplerEngine constructor complete");
-    DBG("Moonrunner: SamplerEngine constructor complete");
 }
 
 void SamplerEngine::prepare (double sampleRate, int samplesPerBlock)
 {
     this->sampleRate = sampleRate;
-    
-    // Initialize default envelope times
-    currentAttackTime = 0.1f;
-    currentReleaseTime = 0.5f;
-    
-    // Prepare filter
+
+    currentAttackTime = 0.003f;
+    currentReleaseTime = 0.4f;
+
     juce::dsp::ProcessSpec spec;
     spec.sampleRate = sampleRate;
     spec.maximumBlockSize = static_cast<juce::uint32> (samplesPerBlock);
-    spec.numChannels = 1;
-    
-    filter.prepare (spec);
-    updateFilter();
-    
-    // Generate a default sample if none is loaded (simple sawtooth wave)
-    // Always generate default sample on prepare to ensure sampler works
-    const int defaultSampleLength = static_cast<int> (sampleRate * 2.0); // 2 seconds
-    juce::AudioBuffer<float> defaultSample (1, defaultSampleLength);
-    
-    // Generate a sawtooth wave at A4 (440 Hz)
-    const float frequency = 440.0f;
-    const float phaseIncrement = frequency / static_cast<float> (sampleRate);
-    float phase = 0.0f;
-    
-    for (int i = 0; i < defaultSampleLength; ++i)
-    {
-        // Sawtooth: phase goes from -1 to 1
-        defaultSample.setSample (0, i, (phase * 2.0f) - 1.0f);
-        phase += phaseIncrement;
-        if (phase >= 1.0f)
-            phase -= 1.0f;
-    }
-    
-    // Always load default sample (will be replaced if user loads custom sample)
-    loadSample (defaultSample, sampleRate);
-    
-    // Reset all voices
+    spec.numChannels = 2;
+
+    ladderFilter.reset();
+    ladderFilter.setMode (juce::dsp::LadderFilterMode::LPF24);
+    ladderFilter.prepare (spec);
+    ladderFilter.setCutoffFrequencyHz (filterCutoffBase);
+    ladderFilter.setResonance (juce::jlimit (0.0f, 0.95f, filterResonanceBase));
+    ladderFilter.setDrive (2.0f);  // NIN grit
+
+    filterBuffer.setSize (2, samplesPerBlock);
+
     for (int v = 0; v < maxVoices; ++v)
     {
         voices[v].isActive = false;
-        voices[v].currentPosition = 0.0f;
         voices[v].envelopeValue = 0.0f;
-        voices[v].envelopePhase = 0.0f;
+        voices[v].envelopePhase = 1.0f;
     }
 }
 
 void SamplerEngine::reset()
 {
     allNotesOff();
-    filter.reset();
+    ladderFilter.reset();
 }
 
 float SamplerEngine::midiNoteToFrequency (int midiNote)
@@ -105,74 +72,48 @@ float SamplerEngine::midiNoteToFrequency (int midiNote)
     return 440.0f * std::pow (2.0f, (midiNote - 69) / 12.0f);
 }
 
-void SamplerEngine::loadSample (const juce::AudioBuffer<float>& sampleData, double originalSampleRate)
-{
-    sampleBuffer.makeCopyOf (sampleData);
-    this->originalSampleRate = originalSampleRate;
-    hasSample = true;
-    loopEnd = sampleBuffer.getNumSamples();
-}
-
-void SamplerEngine::clearSample()
-{
-    sampleBuffer.setSize (2, 0);
-    hasSample = false;
-    allNotesOff();
-}
-
 void SamplerEngine::noteOn (int midiNoteNumber, float velocity)
 {
-    if (!hasSample)
-        return;
-    
-    // First, check if this note is already playing - if so, turn it off first
-    // This prevents multiple voices from playing the same note
     int existingVoice = findVoiceForNote (midiNoteNumber);
     if (existingVoice != -1)
     {
-        // Turn off the existing voice before starting a new one
         voices[existingVoice].isKeyOn = false;
-        voices[existingVoice].envelopePhase = 1.0f; // Release
+        voices[existingVoice].envelopePhase = 1.0f;
     }
-    
+
     int voiceIndex = findFreeVoice();
-    // findFreeVoice now always returns a valid voice index (steals if needed)
     if (voiceIndex < 0 || voiceIndex >= maxVoices)
-        return; // Safety check only
-    
+        return;
+
     Voice& voice = voices[voiceIndex];
     voice.isActive = true;
     voice.midiNote = midiNoteNumber;
+    voice.frequency = midiNoteToFrequency (midiNoteNumber);
     voice.velocity = velocity;
     voice.pitchBend = 0.0f;
-    voice.currentPosition = 0.0f;
     voice.isKeyOn = true;
     voice.envelopeValue = 0.0f;
     voice.envelopePhase = 0.0f;
-    voice.lastEnvValue = 0.0f; // Reset envelope smoothing
-    
-    // Initialize envelope rates based on current attack/release times
+
+    juce::Random r (midiNoteNumber * 31 + static_cast<int> (velocity * 1000));
+    for (int i = 0; i < 4; ++i)
+        voice.phase[i] = r.nextFloat();
+    voice.subPhase = r.nextFloat();
+
     float safeAttack = juce::jmax (0.001f, currentAttackTime);
     voice.attackRate = 1.0f / (safeAttack * static_cast<float> (sampleRate));
     float safeRelease = juce::jmax (0.01f, currentReleaseTime);
     voice.releaseRate = 1.0f / (safeRelease * static_cast<float> (sampleRate));
-    
-    // Calculate playback speed based on MIDI note
-    float targetFreq = midiNoteToFrequency (midiNoteNumber);
-    float originalFreq = midiNoteToFrequency (69); // Assuming sample is at A4
-    voice.playbackSpeed = (targetFreq / originalFreq) * (static_cast<float> (sampleRate) / static_cast<float> (originalSampleRate));
 }
 
 void SamplerEngine::noteOff (int midiNoteNumber)
 {
-    // Turn off ALL voices playing this note (in case multiple were allocated)
     for (int v = 0; v < maxVoices; ++v)
     {
         if (voices[v].isActive && voices[v].midiNote == midiNoteNumber)
         {
-            Voice& voice = voices[v];
-            voice.isKeyOn = false;
-            voice.envelopePhase = 1.0f; // Release
+            voices[v].isKeyOn = false;
+            voices[v].envelopePhase = 1.0f;
         }
     }
 }
@@ -181,347 +122,167 @@ void SamplerEngine::allNotesOff()
 {
     for (int v = 0; v < maxVoices; ++v)
     {
-        if (voices[v].isActive)
-        {
-            noteOff (voices[v].midiNote);
-        }
+        voices[v].isKeyOn = false;
+        voices[v].envelopePhase = 1.0f;
     }
 }
 
 int SamplerEngine::findFreeVoice()
 {
-    // First, try to find a completely inactive voice
     for (int v = 0; v < maxVoices; ++v)
-    {
         if (!voices[v].isActive)
             return v;
-    }
-    
-    // If all voices are active, find one that's fully released
+
     for (int v = 0; v < maxVoices; ++v)
     {
         if (voices[v].envelopeValue < 0.001f && voices[v].envelopePhase == 1.0f && !voices[v].isKeyOn)
         {
-            // Voice is fully released, can be reused
             voices[v].isActive = false;
             return v;
         }
     }
-    
-    // If still no free voice, steal one - prefer voices in release phase
-    int stealIndex = -1;
-    float lowestValue = 1.0f;
-    
-    // First, look for voices already in release phase
+
+    int stealIndex = 0;
+    float lowest = 1.0f;
     for (int v = 0; v < maxVoices; ++v)
     {
-        if (voices[v].envelopePhase == 1.0f) // In release phase
+        if (voices[v].envelopeValue < lowest)
         {
-            if (voices[v].envelopeValue < lowestValue)
-            {
-                lowestValue = voices[v].envelopeValue;
-                stealIndex = v;
-            }
+            lowest = voices[v].envelopeValue;
+            stealIndex = v;
         }
     }
-    
-    // If no voice in release, steal the quietest one (regardless of phase)
-    // This ensures we always return a voice, even if all are in sustain
-    if (stealIndex == -1)
-    {
-        stealIndex = 0;
-        lowestValue = voices[0].envelopeValue;
-        for (int v = 1; v < maxVoices; ++v)
-        {
-            if (voices[v].envelopeValue < lowestValue)
-            {
-                lowestValue = voices[v].envelopeValue;
-                stealIndex = v;
-            }
-        }
-    }
-    
-    // Steal the voice - ensure it's properly reset
-    if (stealIndex >= 0)
-    {
-        voices[stealIndex].isKeyOn = false;
-        voices[stealIndex].envelopePhase = 1.0f; // Release
-    }
-    
+    voices[stealIndex].isKeyOn = false;
+    voices[stealIndex].envelopePhase = 1.0f;
     return stealIndex;
 }
 
 int SamplerEngine::findVoiceForNote (int midiNote)
 {
     for (int v = 0; v < maxVoices; ++v)
-    {
         if (voices[v].isActive && voices[v].midiNote == midiNote)
             return v;
-    }
     return -1;
 }
 
 void SamplerEngine::updateEnvelope (Voice& voice)
 {
-    if (voice.envelopePhase == 0.0f) // Attack
+    if (voice.envelopePhase == 0.0f)
     {
         voice.envelopeValue += voice.attackRate;
         if (voice.envelopeValue >= 1.0f)
-        {
             voice.envelopeValue = 1.0f;
-            // Stay in attack phase until key is released
-        }
     }
-    else if (voice.envelopePhase == 1.0f) // Release
+    else
     {
         voice.envelopeValue -= voice.releaseRate;
         if (voice.envelopeValue <= 0.0f)
         {
             voice.envelopeValue = 0.0f;
-            // Ensure voice is fully off
+            voice.isActive = false;
         }
     }
 }
 
-float SamplerEngine::readSample (const Voice& voice)
+float SamplerEngine::renderVoice (Voice& voice)
 {
-    if (!hasSample || sampleBuffer.getNumSamples() == 0)
-        return 0.0f;
-    
-    // Clamp position to valid range to prevent crashes
-    float clampedPosition = juce::jlimit (0.0f, static_cast<float> (sampleBuffer.getNumSamples() - 1), voice.currentPosition);
-    int position = static_cast<int> (clampedPosition);
-    float fraction = clampedPosition - position;
-    
-    // Ensure position is within bounds
-    position = juce::jlimit (0, sampleBuffer.getNumSamples() - 1, position);
-    
-    // Handle looping
-    if (loopEnabled)
+    float pitchMult = std::pow (2.0f, voice.pitchBend / 12.0f);
+    float freq = voice.frequency * pitchMult;
+    float phaseInc = static_cast<float> (freq / sampleRate);
+    float subInc = phaseInc * 0.5f;
+
+    float sample = 0.0f;
+
+    for (int i = 0; i < 4; ++i)
     {
-        if (position >= loopEnd)
-            position = loopStart + ((position - loopStart) % (loopEnd - loopStart));
-        if (position < loopStart)
-            position = loopStart;
+        float ratio = std::pow (2.0f, kDetuneCents[i] / 1200.0f);
+        float inc = phaseInc * ratio;
+        sample += saw (voice.phase[i]);
+        voice.phase[i] += inc;
+        if (voice.phase[i] >= 1.0f) voice.phase[i] -= 1.0f;
+        if (voice.phase[i] < 0.0f) voice.phase[i] += 1.0f;
     }
-    
-    // Linear interpolation with safe bounds checking
-    int nextPosition = position + 1;
-    if (loopEnabled && nextPosition >= loopEnd)
-        nextPosition = loopStart;
-    else if (nextPosition >= sampleBuffer.getNumSamples())
-        nextPosition = sampleBuffer.getNumSamples() - 1;
-    
-    // Final safety check
-    position = juce::jlimit (0, sampleBuffer.getNumSamples() - 1, position);
-    nextPosition = juce::jlimit (0, sampleBuffer.getNumSamples() - 1, nextPosition);
-    
-    float sample1 = sampleBuffer.getSample (0, position);
-    float sample2 = sampleBuffer.getSample (0, nextPosition);
-    
-    return sample1 + (sample2 - sample1) * fraction;
+
+    sample *= 0.28f;  // Thicker detuned blend
+    sample += 0.48f * saw (voice.subPhase);  // Heavy sub for weight
+    voice.subPhase += subInc;
+    if (voice.subPhase >= 1.0f) voice.subPhase -= 1.0f;
+    if (voice.subPhase < 0.0f) voice.subPhase += 1.0f;
+
+    sample = distort (sample);
+    return sample * voice.envelopeValue * voice.velocity;
 }
 
 void SamplerEngine::renderNextBlock (juce::AudioBuffer<float>& outputBuffer, int startSample, int numSamples)
 {
-    if (!hasSample)
-        return;
-    
-    for (int sample = startSample; sample < startSample + numSamples; ++sample)
+    outputBuffer.clear (startSample, numSamples);
+
+    for (int s = 0; s < numSamples; ++s)
     {
         float output = 0.0f;
-        
-        // Process all active voices
+
         for (int v = 0; v < maxVoices; ++v)
         {
             if (voices[v].isActive)
             {
                 Voice& voice = voices[v];
-                
-                // Update envelope
                 updateEnvelope (voice);
-                
-                // Apply pitch bend
-                float speedMultiplier = std::pow (2.0f, voice.pitchBend / 12.0f);
-                float currentSpeed = voice.playbackSpeed * speedMultiplier;
-                
-                // Read sample
-                float sampleValue = readSample (voice);
-                
-                // Apply envelope with smoothing to prevent clicks during sustain changes
-                float envelopeValue = voice.envelopeValue;
-                float voiceOutput = sampleValue * envelopeValue * voice.velocity * 0.7f; // Scale down for headroom
-                
-                // Smooth envelope transitions to prevent clicks
-                if (std::abs (envelopeValue - voice.lastEnvValue) > 0.01f)
-                {
-                    // Smooth large envelope changes
-                    voiceOutput = voiceOutput * 0.7f + (sampleValue * voice.lastEnvValue * voice.velocity * 0.7f) * 0.3f;
-                }
-                voice.lastEnvValue = envelopeValue;
-                
-                // Prevent clipping and crackling
-                voiceOutput = juce::jlimit (-0.95f, 0.95f, voiceOutput);
-                
-                // Soft saturation for warmth
-                if (std::abs (voiceOutput) > 0.8f)
-                {
-                    float sign = voiceOutput > 0.0f ? 1.0f : -1.0f;
-                    float absOutput = std::abs (voiceOutput);
-                    voiceOutput = sign * (0.8f + 0.15f * std::tanh ((absOutput - 0.8f) * 8.0f));
-                }
-                
-                output += voiceOutput;
-                
-                // Update position with smooth wrapping to prevent clicks
-                float newPosition = voice.currentPosition + currentSpeed;
-                
-                // Check bounds
-                if (loopEnabled)
-                {
-                    if (newPosition >= loopEnd)
-                    {
-                        // Smooth loop wrap
-                        newPosition = loopStart + std::fmod (newPosition - loopStart, loopEnd - loopStart);
-                        // Smooth transition at loop point to prevent clicks
-                        voice.currentPosition = voice.currentPosition * 0.9f + newPosition * 0.1f;
-                    }
-                    else
-                    {
-                        voice.currentPosition = newPosition;
-                    }
-                }
-                else
-                {
-                    if (newPosition >= sampleBuffer.getNumSamples())
-                    {
-                        // Sample ended - smoothly fade out position
-                        voice.currentPosition = static_cast<float> (sampleBuffer.getNumSamples() - 1);
-                        if (voice.isKeyOn)
-                        {
-                            voice.isKeyOn = false;
-                            voice.envelopePhase = 1.0f; // Release
-                        }
-                    }
-                    else
-                    {
-                        voice.currentPosition = newPosition;
-                    }
-                }
-                
-                // Check if voice should be deactivated (fully released)
-                if (envelopeValue <= 0.001f && voice.envelopePhase == 1.0f && !voice.isKeyOn)
-                {
-                    voice.isActive = false;
-                    voice.envelopeValue = 0.0f;
-                    voice.lastEnvValue = 0.0f;
-                }
+                output += renderVoice (voice);
             }
         }
-        
-        // Scale output to prevent clipping with multiple voices
-        output = juce::jlimit (-0.9f, 0.9f, output);
-        
-        // Soft saturation for warmth and to prevent harsh clipping
-        if (std::abs (output) > 0.8f)
-        {
-            float sign = output > 0.0f ? 1.0f : -1.0f;
-            float absOutput = std::abs (output);
-            output = sign * (0.8f + 0.1f * std::tanh ((absOutput - 0.8f) * 10.0f));
-        }
-        
-        // Write to output buffer
-        for (int channel = 0; channel < outputBuffer.getNumChannels(); ++channel)
-        {
-            outputBuffer.addSample (channel, sample, output);
-        }
-    }
-}
 
-void SamplerEngine::setPlaybackSpeed (float speed)
-{
-    for (int v = 0; v < maxVoices; ++v)
+        output = juce::jlimit (-0.95f, 0.95f, output);
+        output = distort (output * 1.5f);  // More drive on master
+
+        filterBuffer.setSample (0, s, output);
+        filterBuffer.setSample (1, s, output);
+    }
+
+    juce::dsp::AudioBlock<float> block (filterBuffer);
+    auto subBlock = block.getSubBlock (0, static_cast<size_t> (numSamples));
+    juce::dsp::ProcessContextReplacing<float> context (subBlock);
+    ladderFilter.process (context);
+
+    for (int ch = 0; ch < outputBuffer.getNumChannels(); ++ch)
     {
-        if (voices[v].isActive)
-        {
-            float baseSpeed = (midiNoteToFrequency (voices[v].midiNote) / midiNoteToFrequency (69)) 
-                            * (static_cast<float> (sampleRate) / static_cast<float> (originalSampleRate));
-            voices[v].playbackSpeed = baseSpeed * juce::jlimit (0.25f, 4.0f, speed);
-        }
+        if (ch < 2)
+            outputBuffer.addFrom (ch, startSample, filterBuffer, ch, 0, numSamples, 0.9f);
+        else
+            outputBuffer.addFrom (ch, startSample, filterBuffer, 0, 0, numSamples, 0.9f);
     }
-}
-
-void SamplerEngine::setLoopEnabled (bool enabled)
-{
-    loopEnabled = enabled;
-}
-
-void SamplerEngine::setLoopStart (int sampleIndex)
-{
-    loopStart = juce::jlimit (0, sampleBuffer.getNumSamples() - 1, sampleIndex);
-}
-
-void SamplerEngine::setLoopEnd (int sampleIndex)
-{
-    loopEnd = juce::jlimit (loopStart + 1, sampleBuffer.getNumSamples(), sampleIndex);
 }
 
 void SamplerEngine::setAttack (float attackSeconds)
 {
-    // Store the attack time for new voices
-    currentAttackTime = attackSeconds;
-    
-    // Ensure minimum attack time
-    float safeAttack = juce::jmax (0.001f, attackSeconds);
-    float rate = 1.0f / (safeAttack * static_cast<float> (sampleRate));
+    currentAttackTime = juce::jmax (0.001f, attackSeconds);
+    float rate = 1.0f / (currentAttackTime * static_cast<float> (sampleRate));
     for (int v = 0; v < maxVoices; ++v)
-    {
         voices[v].attackRate = rate;
-    }
 }
 
 void SamplerEngine::setRelease (float releaseSeconds)
 {
-    // Store the release time for new voices
-    currentReleaseTime = releaseSeconds;
-    
-    // Ensure minimum release time to prevent stuck notes
-    float safeRelease = juce::jmax (0.01f, releaseSeconds);
-    float rate = 1.0f / (safeRelease * static_cast<float> (sampleRate));
+    currentReleaseTime = juce::jmax (0.01f, releaseSeconds);
+    float rate = 1.0f / (currentReleaseTime * static_cast<float> (sampleRate));
     for (int v = 0; v < maxVoices; ++v)
-    {
         voices[v].releaseRate = rate;
-    }
 }
 
 void SamplerEngine::setFilterCutoff (float cutoffHz)
 {
-    filterCutoffBase = juce::jlimit (20.0f, 20000.0f, cutoffHz);
-    updateFilter();
+    filterCutoffBase = juce::jlimit (80.0f, 16000.0f, cutoffHz);
+    ladderFilter.setCutoffFrequencyHz (filterCutoffBase);
 }
 
 void SamplerEngine::setFilterResonance (float resonance)
 {
-    // Map 0.0-1.0 resonance to Q factor 0.1 to 5.0 (prevent instability)
-    filterResonanceBase = juce::jlimit (0.0f, 1.0f, resonance);
-    updateFilter();
-}
-
-void SamplerEngine::updateFilter()
-{
-    // Map resonance (0.0-1.0) to Q factor (0.1 to 5.0)
-    // Higher resonance = higher Q, but cap at 5.0 to prevent instability
-    float qFactor = 0.1f + (filterResonanceBase * 4.9f);
-    *filter.coefficients = *juce::dsp::IIR::Coefficients<float>::makeLowPass (
-        sampleRate, filterCutoffBase, qFactor);
+    filterResonanceBase = juce::jlimit (0.0f, 0.95f, resonance);
+    ladderFilter.setResonance (filterResonanceBase);
 }
 
 void SamplerEngine::setPitchBend (float semitones)
 {
     for (int v = 0; v < maxVoices; ++v)
-    {
         if (voices[v].isActive)
             voices[v].pitchBend = semitones;
-    }
 }
-

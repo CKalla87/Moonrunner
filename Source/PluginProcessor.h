@@ -11,7 +11,6 @@
 #include <JuceHeader.h>
 #include "FMSynthesizer.h"
 #include "AnalogSynthesizer.h"
-#include "PadSynthesizer.h"
 #include "SamplerEngine.h"
 
 //==============================================================================
@@ -106,10 +105,9 @@ private:
     //==============================================================================
     FMSynthesizer fmSynth;
     AnalogSynthesizer analogSynth;
-    PadSynthesizer padSynth;
     SamplerEngine samplerEngine;
 
-    int currentSynthesisMode = 0; // 0=FM, 1=Analog, 2=Sampler, 3=Pad
+    int currentSynthesisMode = 0; // 0=FM, 1=Analog, 2=Sampler
     
     double currentSampleRate = 44100.0;
     

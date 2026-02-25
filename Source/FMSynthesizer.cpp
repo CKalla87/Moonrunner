@@ -2,7 +2,7 @@
   ==============================================================================
 
     FMSynthesizer.cpp
-    FM Synthesis Engine - Inspired by Yamaha DX7
+    Analog-style synthesis - Moog-inspired saw oscillators + ladder filter
 
   ==============================================================================
 */
@@ -40,40 +40,37 @@ FMSynthesizer::FMSynthesizer()
 {
     logToFile("FMSynthesizer constructor start");
     DBG("Moonrunner: FMSynthesizer constructor start");
-    // Initialize default operator settings with better defaults for good sound
+    // Moog-style defaults: two detuned saw oscillators, fat analog character
     for (int v = 0; v < maxVoices; ++v)
     {
-        // Operator 0 (carrier) - main output
-        voices[v].operators[0].outputLevel = 0.8f;
+        // Operator 0 - main saw oscillator
+        voices[v].operators[0].outputLevel = 0.85f;
         voices[v].operators[0].frequencyRatio = 1.0f;
-        voices[v].operators[0].attackRate = 0.001f; // Fast attack
-        voices[v].operators[0].decayRate = 0.0005f; // Medium decay
-        voices[v].operators[0].sustainLevel = 0.7f;
-        voices[v].operators[0].releaseRate = 0.0003f; // Medium release
-        voices[v].operators[0].waveform = 0; // Sine
+        voices[v].operators[0].attackRate = 0.0008f;  // Snappy Moog attack
+        voices[v].operators[0].decayRate = 0.0004f;
+        voices[v].operators[0].sustainLevel = 0.75f;
+        voices[v].operators[0].releaseRate = 0.0004f;
+        voices[v].operators[0].waveform = 3;  // Sawtooth
         
-        // Operators 1-2 (modulators) - add character
-        for (int op = 1; op < 3; ++op)
-        {
-            voices[v].operators[op].outputLevel = 0.3f;
-            voices[v].operators[op].frequencyRatio = 1.0f + (op * 0.5f); // Slight detuning
-            voices[v].operators[op].attackRate = 0.0005f;
-            voices[v].operators[op].decayRate = 0.0003f;
-            voices[v].operators[op].sustainLevel = 0.5f;
-            voices[v].operators[op].releaseRate = 0.0002f;
-            voices[v].operators[op].waveform = 0; // Sine
-        }
+        // Operator 1 - detuned saw for thickness (Moog 2-osc style)
+        voices[v].operators[1].outputLevel = 0.6f;
+        voices[v].operators[1].frequencyRatio = 1.007f;  // Slight detune
+        voices[v].operators[1].attackRate = 0.0008f;
+        voices[v].operators[1].decayRate = 0.0004f;
+        voices[v].operators[1].sustainLevel = 0.75f;
+        voices[v].operators[1].releaseRate = 0.0004f;
+        voices[v].operators[1].waveform = 3;  // Sawtooth
         
-        // Operators 3-5 (less prominent)
-        for (int op = 3; op < 6; ++op)
+        // Operators 2-5 - silent (subtractive synth uses filter, not FM stack)
+        for (int op = 2; op < 6; ++op)
         {
-            voices[v].operators[op].outputLevel = 0.1f;
+            voices[v].operators[op].outputLevel = 0.0f;
             voices[v].operators[op].frequencyRatio = 1.0f;
             voices[v].operators[op].attackRate = 0.001f;
             voices[v].operators[op].decayRate = 0.0005f;
             voices[v].operators[op].sustainLevel = 0.3f;
             voices[v].operators[op].releaseRate = 0.0003f;
-            voices[v].operators[op].waveform = 0; // Sine
+            voices[v].operators[op].waveform = 3;
         }
     }
     logToFile("FMSynthesizer constructor complete");
@@ -84,13 +81,15 @@ void FMSynthesizer::prepare (double sampleRate, int samplesPerBlock)
 {
     this->sampleRate = sampleRate;
     
-    // Prepare filter for stereo (most common case)
+    // Prepare Moog-style ladder filter (24dB/octave)
     juce::dsp::ProcessSpec spec;
     spec.sampleRate = sampleRate;
     spec.maximumBlockSize = static_cast<juce::uint32> (samplesPerBlock);
-    spec.numChannels = 2; // Prepare for stereo
+    spec.numChannels = 2;
     
-    filter.prepare (spec);
+    ladderFilter.reset();
+    ladderFilter.setMode (juce::dsp::LadderFilterMode::LPF24);
+    ladderFilter.prepare (spec);
     updateFilter();
     
     // Reset all voices
@@ -111,17 +110,15 @@ void FMSynthesizer::prepare (double sampleRate, int samplesPerBlock)
 void FMSynthesizer::reset()
 {
     allNotesOff();
-    filter.reset();
+    ladderFilter.reset();
 }
 
 void FMSynthesizer::updateFilter()
 {
     if (sampleRate > 0.0)
     {
-        float qFactor = 0.1f + (filterResonance * 4.9f);
-        qFactor = juce::jlimit (0.1f, 5.0f, qFactor);
-        *filter.coefficients = *juce::dsp::IIR::Coefficients<float>::makeLowPass (
-            sampleRate, filterCutoffBase, qFactor);
+        ladderFilter.setCutoffFrequencyHz (juce::jlimit (20.0f, 20000.0f, filterCutoffBase));
+        ladderFilter.setResonance (juce::jlimit (0.0f, 1.0f, filterResonance));
     }
 }
 
@@ -396,6 +393,13 @@ float FMSynthesizer::processAlgorithm (Voice& voice, int algorithm)
         float mod5 = processOperator (voice.operators[4], mod3, voice.baseFrequency);
         output = processOperator (voice.operators[5], mod4 + mod5, voice.baseFrequency);
     }
+    // Algorithm 2: Moog-style - two detuned saws, no FM (subtractive)
+    else if (algorithm == 2)
+    {
+        float osc0 = processOperator (voice.operators[0], 0.0f, voice.baseFrequency);
+        float osc1 = processOperator (voice.operators[1], 0.0f, voice.baseFrequency);
+        output = osc0 + osc1;
+    }
     // Default: Simple stack
     else
     {
@@ -473,30 +477,34 @@ void FMSynthesizer::renderNextBlock (juce::AudioBuffer<float>& outputBuffer, int
             }
         }
         
-        // Apply LFO modulation (very subtle to prevent artifacts)
+        // Apply LFO modulation (very subtle)
         output *= (1.0f + lfoValue * 0.05f);
         
-        // Normalize output and apply soft saturation instead of hard limiting
-        output = juce::jlimit (-1.0f, 1.0f, output);
-        
-        // Soft saturation for warmth - prevents harsh clipping
-        if (std::abs (output) > 0.85f)
+        // Moog-style soft saturation before filter (warm drive)
+        output = juce::jlimit (-1.2f, 1.2f, output);
+        if (std::abs (output) > 0.8f)
         {
             float sign = output > 0.0f ? 1.0f : -1.0f;
-            float absOutput = std::abs (output);
-            output = sign * (0.85f + 0.15f * std::tanh ((absOutput - 0.85f) * 8.0f));
+            output = sign * std::tanh (std::abs (output));
         }
         
-        // Write to output buffer
+        // Apply Moog ladder filter (per-sample, stereo)
+        float filtIn = juce::jlimit (-1.0f, 1.0f, output * 0.7f);
+        ladderBuffer.setSample (0, 0, filtIn);
+        ladderBuffer.setSample (1, 0, filtIn);
+        juce::dsp::AudioBlock<float> block (ladderBuffer);
+        juce::dsp::ProcessContextReplacing<float> ctx (block);
+        ladderFilter.process (ctx);
+        float filteredL = ladderBuffer.getSample (0, 0);
+        float filteredR = ladderBuffer.getSample (1, 0);
+        
+        // Write to output buffer (stereo or mono)
         for (int channel = 0; channel < outputBuffer.getNumChannels(); ++channel)
         {
-            outputBuffer.addSample (channel, sample, output);
+            float chOut = (channel == 1 && outputBuffer.getNumChannels() > 1) ? filteredR : filteredL;
+            outputBuffer.addSample (channel, sample, chOut);
         }
     }
-    
-    // Note: Filter processing removed temporarily to prevent crashes
-    // The filter can be re-enabled later with proper per-channel processing
-    // For now, the synth will work without the filter
 }
 
 void FMSynthesizer::setAlgorithm (int algorithm)

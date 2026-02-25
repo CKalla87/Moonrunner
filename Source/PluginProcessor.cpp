@@ -164,7 +164,6 @@ void MoonrunnerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerB
     
     fmSynth.prepare (sampleRate, samplesPerBlock);
     analogSynth.prepare (sampleRate, samplesPerBlock);
-    padSynth.prepare (sampleRate, samplesPerBlock);
     samplerEngine.prepare (sampleRate, samplesPerBlock);
 }
 
@@ -172,7 +171,6 @@ void MoonrunnerAudioProcessor::releaseResources()
 {
     fmSynth.reset();
     analogSynth.reset();
-    padSynth.reset();
     samplerEngine.reset();
 }
 
@@ -215,13 +213,12 @@ void MoonrunnerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     float masterVolume = (masterVolumeParam != nullptr) ? masterVolumeParam->load() : 0.7f;
     float masterTune = (masterTuneParam != nullptr) ? masterTuneParam->load() : 0.0f;
     
-    int newMode = static_cast<int> (synthesisMode);
+    int newMode = juce::jlimit (0, 2, static_cast<int> (synthesisMode)); // 0=FM, 1=Analog, 2=Sampler
     if (newMode != currentSynthesisMode)
     {
         // Switch synthesis mode - turn off all notes
         fmSynth.allNotesOff();
         analogSynth.allNotesOff();
-        padSynth.allNotesOff();
         samplerEngine.allNotesOff();
         currentSynthesisMode = newMode;
     }
@@ -283,7 +280,6 @@ void MoonrunnerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
                 analogSynth.noteOn (noteNumber, velocity);
             else if (currentSynthesisMode == 2) // Sampler
                 samplerEngine.noteOn (noteNumber, velocity);
-            // Pad: MIDI consumed in padSynth.renderNextBlock()
         }
         else if (message.isNoteOff())
         {
@@ -309,7 +305,6 @@ void MoonrunnerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
                 analogSynth.noteOff (noteNumber);
             else if (currentSynthesisMode == 2) // Sampler
                 samplerEngine.noteOff (noteNumber);
-            // Pad: MIDI consumed in padSynth.renderNextBlock()
         }
         else if (message.isPitchWheel())
         {
@@ -322,7 +317,6 @@ void MoonrunnerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
                 analogSynth.setPitchBend (pitchBend);
             else if (currentSynthesisMode == 2) // Sampler
                 samplerEngine.setPitchBend (pitchBend);
-            // Pad: pitch from MIDI in renderNextBlock()
         }
         else if (message.isAllNotesOff() || message.isAllSoundOff())
         {
@@ -342,7 +336,6 @@ void MoonrunnerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
             
             fmSynth.allNotesOff();
             analogSynth.allNotesOff();
-            padSynth.allNotesOff();
             samplerEngine.allNotesOff();
         }
     }
@@ -431,10 +424,6 @@ void MoonrunnerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     {
         samplerEngine.renderNextBlock (buffer, 0, buffer.getNumSamples());
     }
-    else if (currentSynthesisMode == 3) // Pad
-    {
-        padSynth.renderNextBlock (buffer, midiMessages, 0, buffer.getNumSamples(), *apvts);
-    }
 
     // Apply master volume
     buffer.applyGain (masterVolume);
@@ -510,10 +499,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout MoonrunnerAudioProcessor::cr
     fprintf(stderr, "Moonrunner: Creating SYNTHESIS_MODE parameter\n");
     fflush(stderr);
     DBG("Moonrunner: Creating SYNTHESIS_MODE parameter");
-    // Synthesis Mode: 0=FM, 1=Analog, 2=Sampler, 3=Pad (default Sampler)
+    // Synthesis Mode: 0=FM, 1=Analog, 2=Sampler (default Sampler)
     params.push_back (std::make_unique<juce::AudioParameterChoice>(
         juce::ParameterID ("SYNTHESIS_MODE", 1), "Synthesis Mode",
-        juce::StringArray ("FM", "Analog", "Sampler", "Pad"),
+        juce::StringArray ("FM", "Analog", "Sampler"),
         2
     ));
 
@@ -537,50 +526,50 @@ juce::AudioProcessorValueTreeState::ParameterLayout MoonrunnerAudioProcessor::cr
         0.0f, "semitones"
     ));
 
-    // ADSR Envelope (for Analog mode)
+    // ADSR Envelope (for Analog mode) - Jump brass
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID ("ATTACK", 1), "Attack",
         juce::NormalisableRange<float> (0.0f, 5.0f, 0.01f),
-        0.1f, "s"
+        0.005f, "s"
     ));
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID ("DECAY", 1), "Decay",
         juce::NormalisableRange<float> (0.0f, 5.0f, 0.01f),
-        0.3f, "s"
+        0.2f, "s"
     ));
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID ("SUSTAIN", 1), "Sustain",
         juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f),
-        0.7f, ""
+        0.75f, ""
     ));
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID ("RELEASE", 1), "Release",
         juce::NormalisableRange<float> (0.0f, 5.0f, 0.01f),
-        0.5f, "s"
+        0.3f, "s"
     ));
 
-    // Filter (for Analog mode)
+    // Filter (for Analog mode) - Jump / OB-Xa brass
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID ("FILTER_CUTOFF", 1), "Filter Cutoff",
         juce::NormalisableRange<float> (20.0f, 20000.0f, 1.0f, 0.3f),
-        2000.0f, "Hz"
+        2800.0f, "Hz"
     ));
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID ("FILTER_RESONANCE", 1), "Filter Resonance",
         juce::NormalisableRange<float> (0.0f, 0.9f, 0.01f), // Limit to 0.9 to prevent instability
-        0.5f, ""
+        0.35f, ""
     ));
 
-    // LFO (for Analog mode)
+    // LFO (for Analog mode) - minimal for Jump (static brass)
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID ("LFO_RATE", 1), "LFO Rate",
         juce::NormalisableRange<float> (0.1f, 20.0f, 0.1f),
-        1.0f, "Hz"
+        0.35f, "Hz"
     ));
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID ("LFO_AMOUNT", 1), "LFO Amount",
         juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f),
-        0.3f, ""
+        0.05f, ""
     ));
     params.push_back (std::make_unique<juce::AudioParameterChoice>(
         juce::ParameterID ("LFO_WAVEFORM", 1), "LFO Waveform",
@@ -600,79 +589,42 @@ juce::AudioProcessorValueTreeState::ParameterLayout MoonrunnerAudioProcessor::cr
         0
     ));
 
-    // New Moonrunner v2 UI parameters
+    // New Moonrunner v2 UI parameters - Van Halen Jump / Oberheim OB-Xa brass defaults
     params.push_back (std::make_unique<juce::AudioParameterChoice>(
         juce::ParameterID ("oscType", 2), "Oscillator Type",
         juce::StringArray ("sine", "square", "sawtooth", "triangle"),
-        2  // sawtooth default
+        2  // sawtooth - Jump brass
     ));
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID ("attack", 2), "Attack",
         juce::NormalisableRange<float> (0.01f, 2.0f, 0.01f),
-        0.1f, "s"
+        0.005f, "s"  // Punchy brass attack
     ));
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID ("decay", 2), "Decay",
         juce::NormalisableRange<float> (0.01f, 2.0f, 0.01f),
-        0.3f, "s"
+        0.2f, "s"
     ));
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID ("sustain", 2), "Sustain",
         juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f),
-        0.7f, ""
+        0.75f, ""
     ));
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID ("release", 2), "Release",
         juce::NormalisableRange<float> (0.01f, 3.0f, 0.01f),
-        0.5f, "s"
+        0.3f, "s"
     ));
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID ("cutoff", 2), "Cutoff",
         juce::NormalisableRange<float> (100.0f, 8000.0f, 10.0f),
-        2000.0f, "Hz"
+        2800.0f, "Hz"  // Open filter for Jump bite
     ));
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID ("resonance", 2), "Resonance",
         juce::NormalisableRange<float> (0.1f, 20.0f, 0.1f),
-        1.0f, ""
+        7.0f, ""  // ~0.35 - moderate resonance for brass
     ));
-
-    // Pad synth (SuperWidePad) parameters
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadGain", "Pad Gain", 0.0f, 1.0f, 0.20f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadCutoff", "Pad Cutoff", 40.0f, 12000.0f, 800.0f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadRes", "Pad Resonance", 0.0f, 0.95f, 0.15f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadDrive", "Pad Drive", 0.5f, 4.0f, 1.2f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadAmpA", "Pad Amp Attack", 0.001f, 2.0f, 0.18f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadAmpD", "Pad Amp Decay", 0.01f, 5.0f, 1.2f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadAmpS", "Pad Amp Sustain", 0.0f, 1.0f, 0.8f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadAmpR", "Pad Amp Release", 0.01f, 10.0f, 2.5f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadFilA", "Pad Filter Attack", 0.001f, 5.0f, 0.30f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadFilD", "Pad Filter Decay", 0.01f, 8.0f, 2.0f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadFilS", "Pad Filter Sustain", 0.0f, 1.0f, 0.5f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadFilR", "Pad Filter Release", 0.01f, 10.0f, 3.0f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadFilEnvAmt", "Pad Filter Env Amount", 0.0f, 2.0f, 0.9f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadKeyTrack", "Pad Key Track", 0.0f, 1.0f, 0.35f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadUniDetune", "Pad Unison Detune", 0.0f, 30.0f, 12.0f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadUnisonCount", "Pad Unison Count", 2.0f, 6.0f, 4.0f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadPreFilterTrim", "Pad PreFilter Trim", 0.1f, 1.0f, 0.25f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadStereoSpread", "Pad Stereo Spread", 0.0f, 1.0f, 0.9f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadMicroDelayMs", "Pad MicroDelay Max (ms)", 0.0f, 10.0f, 6.0f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadPWM", "Pad Pulse Width", 0.05f, 0.95f, 0.40f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadPWMLfoAmt", "Pad PWM LFO Amt", 0.0f, 0.2f, 0.05f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadLfo1Hz", "Pad LFO1 Hz", 0.01f, 1.0f, 0.08f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadLfo1Amt", "Pad LFO1 Amt", 0.0f, 0.15f, 0.03f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadLfo2Hz", "Pad LFO2 Hz", 0.01f, 2.0f, 0.15f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadLfo2Amt", "Pad LFO2 Amt", 0.0f, 0.3f, 0.05f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadChorusRate", "Pad Chorus Rate", 0.05f, 2.0f, 0.30f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadChorusDepth", "Pad Chorus Depth", 0.0f, 1.0f, 0.35f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadChorusDelay", "Pad Chorus Delay (ms)", 1.0f, 30.0f, 8.0f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadChorusMix", "Pad Chorus Mix", 0.0f, 1.0f, 0.20f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadRevRoom", "Pad Reverb Room", 0.0f, 1.0f, 0.75f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadRevDamp", "Pad Reverb Damp", 0.0f, 1.0f, 0.45f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadRevWet", "Pad Reverb Wet", 0.0f, 1.0f, 0.28f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadRevLowCut", "Pad Reverb LowCut", 20.0f, 600.0f, 200.0f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadRevHighCut", "Pad Reverb HighCut", 2000.0f, 18000.0f, 9000.0f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadOut", "Pad Output", 0.05f, 2.0f, 1.0f));
 
     fprintf(stderr, "Moonrunner: createParameterLayout() complete, returning layout\n");
     fflush(stderr);
