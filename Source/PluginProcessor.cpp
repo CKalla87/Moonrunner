@@ -653,6 +653,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout MoonrunnerAudioProcessor::cr
     params.push_back (std::make_unique<juce::AudioParameterFloat>("PadFilEnvAmt", "Pad Filter Env Amount", 0.0f, 2.0f, 0.9f));
     params.push_back (std::make_unique<juce::AudioParameterFloat>("PadKeyTrack", "Pad Key Track", 0.0f, 1.0f, 0.35f));
     params.push_back (std::make_unique<juce::AudioParameterFloat>("PadUniDetune", "Pad Unison Detune", 0.0f, 30.0f, 12.0f));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadUnisonCount", "Pad Unison Count", 2.0f, 6.0f, 4.0f));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>("PadPreFilterTrim", "Pad PreFilter Trim", 0.1f, 1.0f, 0.25f));
     params.push_back (std::make_unique<juce::AudioParameterFloat>("PadStereoSpread", "Pad Stereo Spread", 0.0f, 1.0f, 0.9f));
     params.push_back (std::make_unique<juce::AudioParameterFloat>("PadMicroDelayMs", "Pad MicroDelay Max (ms)", 0.0f, 10.0f, 6.0f));
     params.push_back (std::make_unique<juce::AudioParameterFloat>("PadPWM", "Pad Pulse Width", 0.05f, 0.95f, 0.40f));

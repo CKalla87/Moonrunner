@@ -13,7 +13,7 @@
 
 //==============================================================================
 /**
-    Pad engine: 12-voice polyphonic synth (each voice 6 unison, PolyBLEP osc,
+    Pad engine: 8-voice polyphonic synth (each voice 2–6 unison, PolyBLEP osc,
     drift, ladder filter, micro-delay) + Chorus + Reverb (with HP/LP).
     MIDI is consumed in renderNextBlock; use allNotesOff() on mode switch.
 */
@@ -38,6 +38,7 @@ private:
     juce::Synthesiser synth;
     juce::dsp::Chorus<float> chorus;
     juce::dsp::Reverb reverb;
+    juce::dsp::Limiter<float> limiter;
     juce::dsp::IIR::Filter<float> revHp, revLp;
     juce::dsp::ProcessSpec fxSpec;
     juce::AudioBuffer<float> fxBuffer;

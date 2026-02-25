@@ -14,6 +14,11 @@ namespace
     static inline float softClip (float x) { return std::tanh (x); }
     static inline float lerp (float a, float b, float t) { return a + (b - a) * t; }
 
+    static inline float sanitize (float x)
+    {
+        return (std::isnan (x) || std::isinf (x)) ? 0.0f : x;
+    }
+
     static inline float polyBlep (float t, float dt)
     {
         if (t < dt) { float x = t / dt; return x + x - x * x - 1.0f; }
@@ -175,12 +180,12 @@ struct MicroDelayStereo
 class SuperWidePadVoice : public juce::SynthesiserVoice
 {
 public:
-    static constexpr int kUnison = 6;
+    static constexpr int kUnisonMax = 6;  // Max for array sizing; actual count from param (default 4)
 
     void prepare (double sr, int blockSize)
     {
         sampleRate = sr;
-        for (int i = 0; i < kUnison; ++i)
+        for (int i = 0; i < kUnisonMax; ++i)
         {
             oscSaw1[i].prepare (sr);
             oscSaw2[i].prepare (sr);
@@ -233,6 +238,8 @@ public:
         pwm = getFloat ("PadPWM", 0.40f);
         pwmLfoAmt = getFloat ("PadPWMLfoAmt", 0.05f);
         unisonDetuneCents = getFloat ("PadUniDetune", 12.0f);
+        unisonCount = juce::jlimit (1, kUnisonMax, (int) getFloat ("PadUnisonCount", 4.0f));
+        preFilterTrim = getFloat ("PadPreFilterTrim", 0.25f);
         stereoSpread = getFloat ("PadStereoSpread", 0.9f);
         microDelayMsMax = getFloat ("PadMicroDelayMs", 6.0f);
         lfo1Hz = getFloat ("PadLfo1Hz", 0.08f);
@@ -257,9 +264,9 @@ public:
         level = velocity;
         juce::Random r ((int) (noteNumber * 1337 + (int) (level * 1000)));
 
-        for (int i = 0; i < kUnison; ++i)
+        for (int i = 0; i < kUnisonMax; ++i)
         {
-            float uniPos = (kUnison == 1) ? 0.0f : (float) i / (float) (kUnison - 1);
+            float uniPos = (kUnisonMax == 1) ? 0.0f : (float) i / (float) (kUnisonMax - 1);
             float pan = juce::jmap (uniPos, -stereoSpread, stereoSpread);
             unisonPan[i] = pan;
             float ms = r.nextFloat() * microDelayMsMax;
@@ -290,15 +297,27 @@ public:
     {
         if (!isVoiceActive()) return;
 
+        juce::ScopedNoDenormals noDenormals;
+
         auto* left = outputBuffer.getWritePointer (0);
         auto* right = outputBuffer.getNumChannels() > 1 ? outputBuffer.getWritePointer (1) : nullptr;
 
+        const float unisonNorm = 1.0f / std::sqrt ((float) unisonCount);
+        const float lfoInc1 = lfo1Hz / (float) sampleRate;
+        const float lfoInc2 = lfo2Hz / (float) sampleRate;
+        float lfo1 = std::sin (2.0f * juce::MathConstants<float>::pi * lfoPhase1);
+        float lfo2 = std::sin (2.0f * juce::MathConstants<float>::pi * lfoPhase2);
+
         for (int s = 0; s < numSamples; ++s)
         {
-            float lfo1 = std::sin (2.0f * juce::MathConstants<float>::pi * lfoPhase1);
-            float lfo2 = std::sin (2.0f * juce::MathConstants<float>::pi * lfoPhase2);
-            lfoPhase1 += lfo1Hz / (float) sampleRate;
-            lfoPhase2 += lfo2Hz / (float) sampleRate;
+            // LFO: update every 32 samples (per-block-ish) to reduce CPU
+            if ((s & 31) == 0)
+            {
+                lfo1 = std::sin (2.0f * juce::MathConstants<float>::pi * lfoPhase1);
+                lfo2 = std::sin (2.0f * juce::MathConstants<float>::pi * lfoPhase2);
+            }
+            lfoPhase1 += lfoInc1;
+            lfoPhase2 += lfoInc2;
             if (lfoPhase1 >= 1.0f) lfoPhase1 -= 1.0f;
             if (lfoPhase2 >= 1.0f) lfoPhase2 -= 1.0f;
 
@@ -313,9 +332,9 @@ public:
             ladder.setResonance (resonance);
 
             float rawL = 0.0f, rawR = 0.0f;
-            for (int i = 0; i < kUnison; ++i)
+            for (int i = 0; i < unisonCount; ++i)
             {
-                float uniPos = (kUnison == 1) ? 0.0f : (float) i / (float) (kUnison - 1);
+                float uniPos = (unisonCount == 1) ? 0.0f : (float) i / (float) (unisonCount - 1);
                 float det = juce::jmap (uniPos, -unisonDetuneCents, unisonDetuneCents);
                 float cents1 = det - 6.0f + drift1[i].process();
                 float cents2 = det + 6.0f + drift2[i].process();
@@ -329,9 +348,10 @@ public:
                 float pwmMod = pwm + (pwmLfoAmt * lfo2Amt * lfo2);
                 oscPulse[i].setPulseWidth (pwmMod);
 
+                // Sum cleanly without per-member softClip
                 float sig = 0.50f * oscSaw1[i].process() + 0.40f * oscSaw2[i].process()
                           + 0.10f * oscPulse[i].process() + 0.10f * (0.5f * subTri[i].process());
-                sig = softClip (sig * drive);
+                sig *= drive;
 
                 float pan = unisonPan[i];
                 float gL = std::cos (0.5f * juce::MathConstants<float>::pi * (pan + 1.0f) * 0.5f);
@@ -339,28 +359,39 @@ public:
                 rawL += sig * gL;
                 rawR += sig * gR;
             }
+            // Normalize by 1/sqrt(unisonCount) after summing
+            rawL *= unisonNorm;
+            rawR *= unisonNorm;
+            // Single softClip on combined signal before filter
+            rawL = softClip (rawL);
+            rawR = softClip (rawR);
+
             microDelay.push (rawL, rawR);
 
             float avgDelay = 0.0f;
-            for (int i = 0; i < kUnison; ++i) avgDelay += unisonDelaySamples[i];
-            avgDelay /= (float) kUnison;
+            for (int i = 0; i < unisonCount; ++i) avgDelay += unisonDelaySamples[i];
+            avgDelay /= (float) unisonCount;
             float dL = 0.0f, dR = 0.0f;
             microDelay.read (avgDelay, dL, dR);
             float stereoL = rawL * 0.82f + dL * 0.18f;
             float stereoR = rawR * 0.82f + dR * 0.18f;
+
+            // Pre-filter trim to keep filter input in [-1, 1] for 4-note chords
+            stereoL = sanitize (stereoL) * preFilterTrim;
+            stereoR = sanitize (stereoR) * preFilterTrim;
 
             ladderBuffer.setSample (0, 0, stereoL);
             ladderBuffer.setSample (1, 0, stereoR);
             juce::dsp::AudioBlock<float> ladderBlock (ladderBuffer);
             juce::dsp::ProcessContextReplacing<float> ladderCtx (ladderBlock);
             ladder.process (ladderCtx);
-            float fL = ladderBuffer.getSample (0, 0);
-            float fR = ladderBuffer.getSample (1, 0);
+            float fL = sanitize (ladderBuffer.getSample (0, 0));
+            float fR = sanitize (ladderBuffer.getSample (1, 0));
             float outL = fL * ampEnv * level * masterGain;
             float outR = fR * ampEnv * level * masterGain;
 
-            left[startSample + s] += outL;
-            if (right) right[startSample + s] += outR;
+            left[startSample + s] += sanitize (outL);
+            if (right) right[startSample + s] += sanitize (outR);
 
             if (!ampAdsr.isActive()) { clearCurrentNote(); break; }
         }
@@ -382,15 +413,17 @@ private:
     float pwm = 0.40f;
     float pwmLfoAmt = 0.05f;
     float unisonDetuneCents = 12.0f;
+    int unisonCount = 4;
+    float preFilterTrim = 0.25f;
     float stereoSpread = 0.9f;
     float microDelayMsMax = 6.0f;
     float lfo1Hz = 0.08f, lfo1Amt = 0.03f, lfo2Hz = 0.15f, lfo2Amt = 0.05f;
     float lfoPhase1 = 0.0f, lfoPhase2 = 0.0f;
 
-    PolyBlepOsc oscSaw1[kUnison], oscSaw2[kUnison], oscPulse[kUnison], subTri[kUnison];
-    Drift drift1[kUnison], drift2[kUnison], driftP[kUnison];
-    float unisonPan[kUnison] = {};
-    float unisonDelaySamples[kUnison] = {};
+    PolyBlepOsc oscSaw1[kUnisonMax], oscSaw2[kUnisonMax], oscPulse[kUnisonMax], subTri[kUnisonMax];
+    Drift drift1[kUnisonMax], drift2[kUnisonMax], driftP[kUnisonMax];
+    float unisonPan[kUnisonMax] = {};
+    float unisonDelaySamples[kUnisonMax] = {};
     juce::dsp::LadderFilter<float> ladder;
     juce::AudioBuffer<float> ladderBuffer { 2, 1 };
     MicroDelayStereo microDelay;
@@ -409,7 +442,7 @@ public:
 PadSynthesizer::PadSynthesizer()
 {
     synth.clearVoices();
-    for (int i = 0; i < 12; ++i)
+    for (int i = 0; i < 8; ++i)  // Lower polyphony to reduce CPU and chord crackle
         synth.addVoice (new SuperWidePadVoice());
     synth.clearSounds();
     synth.addSound (new SuperWidePadSound());
@@ -432,6 +465,10 @@ void PadSynthesizer::prepare (double sampleRate, int samplesPerBlock)
     chorus.prepare (fxSpec);
     reverb.reset();
     reverb.prepare (fxSpec);
+    limiter.reset();
+    limiter.prepare (fxSpec);
+    limiter.setThreshold (-0.5f);   // Ceiling -0.5 dB
+    limiter.setRelease (100.0f);    // Release ~100 ms
     revHp.coefficients = juce::dsp::IIR::Coefficients<float>::makeHighPass (sampleRate, 200.0f);
     revLp.coefficients = juce::dsp::IIR::Coefficients<float>::makeLowPass (sampleRate, 9000.0f);
     revHp.prepare (fxSpec);
@@ -444,6 +481,7 @@ void PadSynthesizer::reset()
     synth.allNotesOff (0, true);
     chorus.reset();
     reverb.reset();
+    limiter.reset();
     revHp.reset();
     revLp.reset();
 }
@@ -459,6 +497,8 @@ void PadSynthesizer::renderNextBlock (juce::AudioBuffer<float>& outputBuffer,
                                       int numSamples,
                                       juce::AudioProcessorValueTreeState& apvts)
 {
+    juce::ScopedNoDenormals noDenormals;
+
     for (int i = 0; i < synth.getNumVoices(); ++i)
         if (auto* v = dynamic_cast<SuperWidePadVoice*> (synth.getVoice (i)))
             v->setParams (apvts);
@@ -496,6 +536,10 @@ void PadSynthesizer::renderNextBlock (juce::AudioBuffer<float>& outputBuffer,
     reverb.setParameters (rp);
     reverb.process (workCtx);
 
+    // End-of-chain limiter: ceiling -0.5 dB, release 100 ms (internal stages already have headroom)
+    juce::dsp::ProcessContextReplacing<float> limiterCtx (workBlock);
+    limiter.process (limiterCtx);
+
     for (int ch = 0; ch < 2; ++ch)
         outputBuffer.copyFrom (ch, startSample, fxBuffer, ch, 0, numSamples);
 
@@ -504,6 +548,9 @@ void PadSynthesizer::renderNextBlock (juce::AudioBuffer<float>& outputBuffer,
     {
         auto* data = outputBuffer.getWritePointer (ch);
         for (int i = startSample; i < startSample + numSamples; ++i)
-            data[i] = softClip (data[i] * outGain);
+        {
+            float s = sanitize (data[i]) * outGain;
+            data[i] = softClip (s);
+        }
     }
 }
