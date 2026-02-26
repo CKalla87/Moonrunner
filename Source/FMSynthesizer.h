@@ -97,8 +97,8 @@ private:
     // Moog-style ladder filter (24dB/octave lowpass)
     juce::dsp::LadderFilter<float> ladderFilter;
     juce::AudioBuffer<float> ladderBuffer { 2, 1 };
-    float filterCutoffBase = 2800.0f;
-    float filterResonance = 0.6f;
+    float filterCutoffBase = 1400.0f;   // Vintage Moog: darker, warmer default
+    float filterResonance = 0.55f;      // Classic Moog squelch
     
     double sampleRate = 44100.0;
     
