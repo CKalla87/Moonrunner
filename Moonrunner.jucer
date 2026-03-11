@@ -72,7 +72,7 @@
     <XCODE_MAC targetFolder="Builds/MacOSX">
       <CONFIGURATIONS>
         <CONFIGURATION isDebug="1" name="Debug" targetName="Moonrunner"/>
-        <CONFIGURATION isDebug="0" name="Release" targetName="Moonrunner"/>
+        <CONFIGURATION isDebug="0" name="Release" targetName="Moonrunner" enablePluginBinaryCopyStep="0"/>
       </CONFIGURATIONS>
       <MODULEPATHS>
         <MODULEPATH id="juce_audio_basics" path="../NebulaEQ/JUCE/modules"/>

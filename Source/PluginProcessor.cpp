@@ -181,16 +181,9 @@ bool MoonrunnerAudioProcessor::isBusesLayoutSupported (const BusesLayout& layout
     juce::ignoreUnused (layouts);
     return true;
   #else
-    if (layouts.getMainOutputChannelSet() != juce::AudioChannelSet::mono()
-     && layouts.getMainOutputChannelSet() != juce::AudioChannelSet::stereo())
-        return false;
-
-   #if ! JucePlugin_IsSynth
-    if (layouts.getMainOutputChannelSet() != layouts.getMainInputChannelSet())
-        return false;
-   #endif
-
-    return true;
+    // Instrument: allow mono and stereo output (no audio input)
+    auto out = layouts.getMainOutputChannelSet();
+    return (out == juce::AudioChannelSet::mono() || out == juce::AudioChannelSet::stereo());
   #endif
 }
 #endif
